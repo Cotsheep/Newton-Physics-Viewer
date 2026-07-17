@@ -19,6 +19,132 @@ import warp as wp
 DEFAULT_SOURCE = Path(r"D:\Datasets\Artiverse\dataset_chunks\data")
 UNBOUNDED_LIMIT = 1.0e6
 DEFAULT_CONTINUOUS_SPEED_DEGREES = 90.0
+SIDEBAR_SCROLLBAR_SIZE = 22.0
+SIDEBAR_WHEEL_SCROLL_PIXELS = 64.0
+
+
+def widen_imgui_scrollbar(imgui, min_size: float = SIDEBAR_SCROLLBAR_SIZE) -> None:
+    get_style = getattr(imgui, "get_style", None)
+    if not callable(get_style):
+        return
+
+    try:
+        style = get_style()
+    except Exception:
+        return
+
+    for attr in ("scrollbar_size", "ScrollbarSize", "scrollbarSize"):
+        try:
+            current = getattr(style, attr)
+        except Exception:
+            continue
+
+        try:
+            if float(current) < min_size:
+                setattr(style, attr, min_size)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        return
+
+
+def imgui_float_call(imgui, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        func = getattr(imgui, name, None)
+        if not callable(func):
+            continue
+        try:
+            return float(func())
+        except Exception:
+            continue
+    return None
+
+
+def imgui_mouse_wheel(imgui) -> float:
+    get_io = getattr(imgui, "get_io", None)
+    if not callable(get_io):
+        return 0.0
+
+    try:
+        io = get_io()
+    except Exception:
+        return 0.0
+
+    for attr in ("mouse_wheel", "MouseWheel"):
+        try:
+            value = getattr(io, attr)
+        except Exception:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+
+    return 0.0
+
+
+def imgui_current_window_hovered(imgui) -> bool:
+    is_window_hovered = getattr(imgui, "is_window_hovered", None)
+    if not callable(is_window_hovered):
+        return False
+
+    try:
+        return bool(is_window_hovered())
+    except TypeError:
+        return False
+
+
+def imgui_primary_mouse_down(imgui) -> bool:
+    is_mouse_down = getattr(imgui, "is_mouse_down", None)
+    if callable(is_mouse_down):
+        try:
+            return bool(is_mouse_down(0))
+        except Exception:
+            pass
+
+    get_io = getattr(imgui, "get_io", None)
+    if not callable(get_io):
+        return False
+
+    try:
+        mouse_down = getattr(get_io(), "mouse_down")
+        return bool(mouse_down[0])
+    except Exception:
+        return False
+
+
+def set_imgui_scroll_y(imgui, value: float) -> bool:
+    set_scroll_y = getattr(imgui, "set_scroll_y", None)
+    if not callable(set_scroll_y):
+        return False
+
+    try:
+        set_scroll_y(value)
+    except Exception:
+        return False
+    return True
+
+
+def assist_imgui_window_wheel_scroll(imgui, previous_scroll_y: float | None) -> float | None:
+    current_scroll_y = imgui_float_call(imgui, ("get_scroll_y",))
+    max_scroll_y = imgui_float_call(imgui, ("get_scroll_max_y",))
+    if current_scroll_y is None or max_scroll_y is None:
+        return previous_scroll_y
+
+    wheel = imgui_mouse_wheel(imgui)
+    if (
+        previous_scroll_y is not None
+        and abs(wheel) > 1.0e-6
+        and max_scroll_y > 0.0
+        and abs(current_scroll_y - previous_scroll_y) < 0.5
+        and imgui_current_window_hovered(imgui)
+        and not imgui_primary_mouse_down(imgui)
+    ):
+        next_scroll_y = current_scroll_y - wheel * SIDEBAR_WHEEL_SCROLL_PIXELS
+        next_scroll_y = min(max(next_scroll_y, 0.0), max_scroll_y)
+        if abs(next_scroll_y - current_scroll_y) > 0.5 and set_imgui_scroll_y(imgui, next_scroll_y):
+            current_scroll_y = next_scroll_y
+
+    return current_scroll_y
 
 
 @dataclass(frozen=True)
@@ -92,6 +218,7 @@ class JointControlPanel:
         self.continuous_directions = {
             control.coord_index: 1 for control in self.controls if self.is_continuous_motion_control(control)
         }
+        self.last_side_scroll_y: float | None = None
         self.clamp_to_limits = True
         self.show_body_positions = True
 
@@ -208,6 +335,103 @@ class JointControlPanel:
         changed, reverse = imgui.checkbox(f"Reverse##continuous_direction_{control.joint_index}_{coord_index}", reverse)
         if changed:
             self.continuous_directions[coord_index] = -1 if reverse else 1
+
+    def slider_no_input_flag(self, imgui) -> Any | None:
+        for attr in ("SLIDER_FLAGS_NO_INPUT", "SliderFlags_NoInput"):
+            value = getattr(imgui, attr, None)
+            if value is not None:
+                return value
+
+        for enum_name in ("SliderFlags_", "SliderFlags"):
+            enum = getattr(imgui, enum_name, None)
+            if enum is None:
+                continue
+            for attr in ("no_input", "NoInput", "NO_INPUT"):
+                value = getattr(enum, attr, None)
+                if value is not None:
+                    return value
+
+        return None
+
+    def slider_float_no_input(
+        self,
+        imgui,
+        label: str,
+        value: float,
+        lower: float,
+        upper: float,
+        value_format: str,
+    ) -> tuple[bool, float]:
+        flags = self.slider_no_input_flag(imgui)
+        if flags is not None:
+            try:
+                return imgui.slider_float(label, value, lower, upper, format=value_format, flags=flags)
+            except TypeError:
+                try:
+                    return imgui.slider_float(label, value, lower, upper, value_format, flags)
+                except TypeError:
+                    pass
+
+        return imgui.slider_float(label, value, lower, upper, format=value_format)
+
+    def set_next_item_width(self, imgui, width: float) -> None:
+        set_width = getattr(imgui, "set_next_item_width", None)
+        if callable(set_width):
+            set_width(width)
+
+    def input_float_value(self, imgui, label: str, value: float, value_format: str) -> tuple[bool, float]:
+        input_float = getattr(imgui, "input_float", None)
+        if not callable(input_float):
+            return False, value
+
+        attempts = (
+            lambda: input_float(label, value, format=value_format),
+            lambda: input_float(label, value, 0.0, 0.0, format=value_format),
+            lambda: input_float(label, value, 0.0, 0.0, value_format),
+        )
+        for attempt in attempts:
+            try:
+                result = attempt()
+            except TypeError:
+                continue
+
+            if isinstance(result, tuple) and len(result) >= 2:
+                return bool(result[0]), float(result[1])
+            return False, value
+
+        return False, value
+
+    def render_slider_with_input(
+        self,
+        imgui,
+        control: JointControl,
+        value: float,
+        lower: float,
+        upper: float,
+        slider_format: str,
+        input_format: str,
+    ) -> tuple[bool, float]:
+        changed, value = self.slider_float_no_input(
+            imgui,
+            control.slider_label,
+            value,
+            lower,
+            upper,
+            slider_format,
+        )
+
+        imgui.same_line()
+        self.set_next_item_width(imgui, 72.0)
+        input_changed, input_value = self.input_float_value(
+            imgui,
+            f"##value_{control.joint_index}_{control.coord_index}",
+            value,
+            input_format,
+        )
+        if input_changed:
+            return True, input_value
+
+        return changed, value
 
     def update_continuous_motion(self, dt: float) -> bool:
         if dt <= 0.0:
@@ -361,6 +585,8 @@ class JointControlPanel:
             imgui.tree_pop()
 
     def render_ui(self, imgui) -> None:
+        widen_imgui_scrollbar(imgui)
+        self.last_side_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_side_scroll_y)
         imgui.text("Joint Controls")
 
         if not self.controls:
@@ -393,18 +619,28 @@ class JointControlPanel:
                     value = math.degrees(float(self.values[control.coord_index]))
                     lower = math.degrees(control.lower)
                     upper = math.degrees(control.upper)
-                    changed, value = imgui.slider_float(control.slider_label, value, lower, upper, format="%.1f deg")
+                    changed, value = self.render_slider_with_input(
+                        imgui,
+                        control,
+                        value,
+                        lower,
+                        upper,
+                        "%.1f deg",
+                        "%.1f",
+                    )
                     if changed:
                         self.values[control.coord_index] = math.radians(value)
                         changed_any = True
                 else:
                     value = float(self.values[control.coord_index])
-                    changed, value = imgui.slider_float(
-                        control.slider_label,
+                    changed, value = self.render_slider_with_input(
+                        imgui,
+                        control,
                         value,
                         control.lower,
                         control.upper,
-                        format="%.3f",
+                        "%.3f",
+                        "%.4f",
                     )
                     if changed:
                         self.values[control.coord_index] = value
@@ -846,6 +1082,7 @@ class TractionForceMonitor:
         self.active_body: int | None = None
         self.last_sample: TractionForceSample | None = None
         self.last_sample_time = 0.0
+        self.last_side_scroll_y: float | None = None
 
     def update(self, viewer: newton.viewer.ViewerGL, state: newton.State, sim_time: float) -> None:
         sample = compute_picking_traction_force(viewer, self.model, state)
@@ -887,6 +1124,8 @@ class TractionForceMonitor:
         return f"body_{body_index}"
 
     def render_ui(self, imgui) -> None:
+        widen_imgui_scrollbar(imgui)
+        self.last_side_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_side_scroll_y)
         imgui.separator()
         imgui.text("Traction Force")
 
@@ -945,6 +1184,7 @@ class AssetBrowser:
         self.requested_index: int | None = None
         self.last_copied_model_id: str | None = None
         self.copy_error_model_id: str | None = None
+        self.last_panel_scroll_y: float | None = None
         self.tree = self._build_tree(urdfs)
 
     def _build_tree(self, urdfs: list[Path]) -> dict[str, dict[str, list[tuple[int, str]]]]:
@@ -964,6 +1204,8 @@ class AssetBrowser:
         }
 
     def render_ui(self, imgui) -> None:
+        widen_imgui_scrollbar(imgui)
+        self.last_panel_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_panel_scroll_y)
         imgui.set_next_item_open(True, imgui.Cond_.appearing)
         if not imgui.collapsing_header("Assets"):
             return
@@ -1168,6 +1410,7 @@ def run_viewer(
         viewer.register_ui_callback(asset_browser.render_ui, position="panel")
 
     def render_double_sided_option(imgui) -> None:
+        widen_imgui_scrollbar(imgui)
         changed, enabled = imgui.checkbox("Double-sided Meshes", double_sided_state["enabled"])
         if changed:
             double_sided_state["enabled"] = enabled
