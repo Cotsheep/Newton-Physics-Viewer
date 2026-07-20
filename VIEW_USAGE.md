@@ -2,6 +2,20 @@
 
 `view.py` 用 Newton Viewer 打开 Artiverse 数据集里的 URDF 模型，并提供关节滑条、资产快速切换、位置显示、双面渲染和右键拖拽力显示。
 
+## 代码目录
+
+`view.py` 仍是兼容启动入口，原来的命令不变。目录按职责整理为：
+
+- `asset_viewer/assets.py`：资产发现、路径描述和 articulation metadata
+- `asset_viewer/controls.py`：关节控制与 ImGui 交互
+- `asset_viewer/traction.py`：右键拖拽牵引力的计算和显示
+- `asset_viewer/app.py`：Newton 模型构建、Viewer 运行时和命令行
+- `collision_probe.py`：独立的碰撞探针程序
+- `third_party/artiverse_official/upstream/`：固定版本的 Artiverse 官方查看器代码
+
+项目自己的官方查看器兼容代码只放在
+`third_party/artiverse_official/` 的上层，不会修改 `upstream/` 快照。
+
 默认读取目录：
 
 ```text
@@ -81,9 +95,10 @@ python view.py --category microwave --index 12
 
 - `Reset all`：恢复初始关节状态
 - `Zero all`：所有关节归零
-- `Open door 90` / `Close door`：尝试控制名称里包含 `door` 或 `door_panel` 的门关节
 
 每个关节会显示一个滑条。转动关节通常用角度显示，平移关节用数值显示。
+
+程序不会根据资产类别或关节名称自动修改姿态。初次加载和 `Reset all` 都使用 URDF 声明的原始关节状态；`Zero all`、关节滑条和 metadata motion state 只在用户主动操作时生效。
 
 ### Position Display
 
@@ -121,6 +136,14 @@ python view.py --category microwave --index 12
 python view.py --simulate
 ```
 
+模拟默认暂停在资产的原始姿态，便于先检查模型。需要运行物理时可在 Viewer 中开始播放，或者使用下面的命令让它加载后立即运行：
+
+```powershell
+python view.py --simulate --start-running
+```
+
+开始播放后，程序遵循 URDF 自身的质量、惯量、关节限制和动力学参数。如果资产没有提供关节阻尼、摩擦或驱动，部件在重力下转动可能反映的是资产数据质量问题。
+
 右键拖拽模型时，侧边栏会显示 `Traction Force`：
 
 - `Force xyz`：右键拖拽施加到 body 上的力
@@ -142,6 +165,41 @@ python view.py --simulate --no-print-traction-force
 python view.py --simulate --traction-print-hz 30
 ```
 
+## 碰撞探针
+
+`collision_probe.py` 会创建一个运动学小球，让它沿指定方向穿过资产碰撞体，并显示、
+记录实际 contact。它不依赖视觉 mesh 的外观，因此适合判断碰撞体是否错位、尺寸错误
+或存在空洞。
+
+```powershell
+python collision_probe.py --category microwave --index 0
+python collision_probe.py D:\path\to\model\urdf_w_collider\model.urdf
+```
+
+探针直接使用 `asset_viewer` 包的资产发现和渲染 Interface，不再通过兼容入口
+`view.py` 导入。
+
+## Artiverse 官方查看器对照
+
+本项目已把官方 GitHub 仓库中的 `view_model.py`、BlenderProc 渲染脚本和 HDRI
+按固定 commit 放入 `third_party/artiverse_official/upstream/`。官方查看器读取
+`*.segmented.glb`，输出每个 part 的高亮/纹理视频；它不是 Newton URDF
+交互窗口，适合用来对照“原始分割 GLB 是否正常”。
+
+安装与运行说明见
+`third_party/artiverse_official/README.md`。建议先执行：
+
+```powershell
+python third_party/artiverse_official/run_view_model.py `
+  --model-path D:\path\to\category\source\MODEL_ID `
+  --output-dir official_renders\MODEL_ID `
+  --check
+```
+
+本地 Adapter 会兼容预发布数据只有 `*.articulations.json` 的情况，所有转换都在
+临时目录完成，不会改写资产文件。上游来源、commit、包含范围和 SHA-256 记录在
+`third_party/artiverse_official/PROVENANCE.md`。
+
 ## 常用参数
 
 ```powershell
@@ -149,7 +207,6 @@ python view.py --category scissors --index 3
 python view.py --category microwave --index 12 --simulate
 python view.py --category lighter --show-colliders
 python view.py --category piano --scale 0.5
-python view.py --category microwave --open-door 0
 python view.py --category microwave --initial-motion-state closed
 python view.py --headless --frames 1
 ```
@@ -158,15 +215,13 @@ python view.py --headless --frames 1
 
 - `--category NAME`：只搜索某个类别，可重复使用
 - `--index N`：打开搜索结果中的第 N 个模型
-- `--simulate`：开启物理模拟
+- `--simulate`：初始化物理模拟，默认暂停在原始姿态
+- `--start-running`：与 `--simulate` 一起使用，加载后立即开始运行物理
 - `--scale VALUE`：导入模型时缩放
 - `--z VALUE`：导入模型时增加高度偏移
 - `--ground`：添加地面
 - `--show-colliders`：显示碰撞 mesh
 - `--double-sided / --no-double-sided`：开关双面渲染
-- `--open-door DEG`：初始化门关节角度
-- `--knobs DEG`：初始化旋钮角度
-- `--turntable DEG`：初始化转盘角度
 - `--initial-motion-state NAME`：应用 articulation JSON 中的 motion state
 - `--headless --frames 1`：无窗口快速测试能否加载
 

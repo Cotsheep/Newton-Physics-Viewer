@@ -1,0 +1,2 @@
+-r upstream/requirements.txt
+static-ffmpeg==3.0
