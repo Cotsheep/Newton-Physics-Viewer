@@ -212,6 +212,10 @@ class JointControlPanel:
                 continue
 
             joint_type = int(joint_types[joint_index])
+            # A free joint stores the rigid body's position/quaternion, not an
+            # articulation coordinate suitable for a one-dimensional slider.
+            if joint_type == int(newton.JointType.FREE):
+                continue
             angular = joint_type == int(newton.JointType.REVOLUTE)
             short_label = label.split("/")[-1]
             pid = parse_joint_pid(label)

@@ -12,6 +12,7 @@ from typing import Any
 
 
 DEFAULT_SOURCE = Path(r"D:\Datasets\Artiverse\dataset_chunks\data")
+SUPPORTED_ASSET_SUFFIXES = frozenset({".urdf", ".glb"})
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,25 @@ def describe_urdf_path(urdf_path: Path) -> str:
 
 
 def copyable_model_id_from_urdf(urdf_path: Path) -> str:
-    return describe_urdf_path(urdf_path).replace("/", "\\")
+    return describe_urdf_path(urdf_path).replace("/", " ").replace("\\", " ")
+
+
+def describe_asset_path(asset_path: Path) -> str:
+    """Return a compact browser label for a URDF or standalone GLB asset."""
+    if asset_path.suffix.lower() == ".urdf":
+        return describe_urdf_path(asset_path)
+
+    parent = asset_path.parent
+    grandparent = parent.parent
+    if grandparent != parent:
+        return f"{grandparent.name}/{parent.name}/{asset_path.name}"
+    if parent.name:
+        return f"{parent.name}/{asset_path.name}"
+    return asset_path.name
+
+
+def copyable_model_id_from_asset(asset_path: Path) -> str:
+    return describe_asset_path(asset_path).replace("/", " ").replace("\\", " ")
 
 
 def copy_text_to_clipboard(text: str, imgui: Any | None = None) -> bool:
@@ -212,9 +231,39 @@ def find_urdfs(source: Path, categories: tuple[str, ...] | None = None) -> list[
     raise FileNotFoundError(f"No URDF files found under: {source}")
 
 
+def find_assets(source: Path, categories: tuple[str, ...] | None = None) -> list[Path]:
+    """Discover importable assets while preserving URDF-first directory behavior."""
+    if source.is_file():
+        if source.suffix.lower() not in SUPPORTED_ASSET_SUFFIXES:
+            raise ValueError(f"Expected a .urdf or .glb file, got: {source}")
+        if not matches_categories(source, categories):
+            raise FileNotFoundError(f"No assets matched categories {categories}: {source}")
+        return [source]
+
+    try:
+        return find_urdfs(source, categories)
+    except FileNotFoundError as urdf_error:
+        if not source.exists():
+            raise urdf_error
+
+    glbs = unique_sorted_paths(list(source.rglob("*.glb")))
+    filtered = [path for path in glbs if matches_categories(path, categories)]
+    if filtered:
+        return filtered
+
+    if glbs:
+        raise FileNotFoundError(f"No GLB files matched categories {categories} under: {source}")
+    raise FileNotFoundError(f"No URDF or GLB files found under: {source}")
+
+
 def print_urdfs(urdfs: list[Path]) -> None:
     for index, urdf in enumerate(urdfs):
         print(f"{index:03d}: {describe_urdf_path(urdf)} -> {urdf}")
+
+
+def print_assets(assets: list[Path]) -> None:
+    for index, asset in enumerate(assets):
+        print(f"{index:03d}: {describe_asset_path(asset)} -> {asset}")
 
 
 def describe_metadata(metadata: ArticulationMetadata) -> str:

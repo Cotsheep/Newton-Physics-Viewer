@@ -5,21 +5,25 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import newton
 import newton.viewer
+import numpy as np
 import warp as wp
+from newton._src.utils.mesh import load_meshes_from_file
 
 from .assets import (
     DEFAULT_SOURCE,
+    SUPPORTED_ASSET_SUFFIXES,
+    ArticulationMetadata,
     copy_text_to_clipboard,
-    copyable_model_id_from_urdf,
+    copyable_model_id_from_asset,
+    describe_asset_path,
     describe_metadata,
-    describe_urdf_path,
-    find_urdfs,
+    find_assets,
     load_articulation_metadata,
-    print_urdfs,
+    print_assets,
 )
 from .controls import (
     DEFAULT_CONTINUOUS_SPEED_DEGREES,
@@ -27,33 +31,164 @@ from .controls import (
     assist_imgui_window_wheel_scroll,
     widen_imgui_scrollbar,
 )
+from .camera import CameraControlPanel, compute_asset_bounds
+from .solvers import SOLVER_LABELS, SOLVER_NAMES, create_solver, prepare_builder_for_solver
 from .traction import TractionForceMonitor
 
 
-def build_model(args: argparse.Namespace, urdf_path: Path) -> tuple[newton.Model, newton.State, JointControlPanel]:
-    builder = newton.ModelBuilder(
-        up_axis=newton.Axis.Z,
-        gravity=-9.81 if args.simulate else 0.0,
+def choose_asset_file(
+    initial_dir: Path,
+    *,
+    root_factory: Callable[[], Any] | None = None,
+    askopenfilename: Callable[..., str] | None = None,
+) -> Path | None:
+    """Open a foreground file dialog and return the selected asset path."""
+    if root_factory is None or askopenfilename is None:
+        from tkinter import Tk, filedialog
+
+        root_factory = root_factory or Tk
+        askopenfilename = askopenfilename or filedialog.askopenfilename
+
+    root = root_factory()
+    try:
+        root.withdraw()
+        # ViewerGL owns a separate native window and can otherwise cover this
+        # modal dialog while askopenfilename() continues blocking the UI callback.
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        selected = askopenfilename(
+            parent=root,
+            title="Import URDF or GLB asset",
+            initialdir=str(initial_dir),
+            filetypes=(
+                ("Supported assets", "*.urdf *.glb"),
+                ("URDF files", "*.urdf"),
+                ("GLB files", "*.glb"),
+                ("All files", "*.*"),
+            ),
+        )
+    finally:
+        root.destroy()
+
+    return Path(selected) if selected else None
+
+
+def choose_urdf_file(
+    initial_dir: Path,
+    *,
+    root_factory: Callable[[], Any] | None = None,
+    askopenfilename: Callable[..., str] | None = None,
+) -> Path | None:
+    """Backward-compatible alias for the URDF/GLB asset dialog."""
+    return choose_asset_file(
+        initial_dir,
+        root_factory=root_factory,
+        askopenfilename=askopenfilename,
     )
 
-    builder.add_urdf(
-        str(urdf_path),
-        xform=wp.transform((0.0, 0.0, args.z), wp.quat_identity()),
-        floating=False,
-        scale=args.scale,
-        up_axis=newton.Axis.Z,
-        enable_self_collisions=False,
-        collapse_fixed_joints=False,
-        force_show_colliders=args.show_colliders,
+
+def _box_inertia(mass: float, extents: np.ndarray) -> wp.mat33:
+    dx, dy, dz = np.maximum(np.asarray(extents, dtype=np.float64), 1.0e-6)
+    ixx = mass * (dy * dy + dz * dz) / 12.0
+    iyy = mass * (dx * dx + dz * dz) / 12.0
+    izz = mass * (dx * dx + dy * dy) / 12.0
+    return wp.mat33(ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz)
+
+
+def _add_glb(builder: newton.ModelBuilder, args: argparse.Namespace, glb_path: Path) -> None:
+    # Newton's URDF importer uses the same loader. Keeping it here preserves
+    # GLB materials, textures, UVs, and multiple geometry/material primitives.
+    meshes = load_meshes_from_file(
+        str(glb_path),
+        scale=(args.scale, args.scale, args.scale),
+        maxhullvert=args.glb_max_hull_vertices,
     )
+    if not meshes:
+        raise ValueError(f"GLB contains no triangle meshes: {glb_path}")
+
+    vertices = [np.asarray(mesh.vertices, dtype=np.float64) for mesh in meshes if len(mesh.vertices)]
+    if not vertices:
+        raise ValueError(f"GLB contains no mesh vertices: {glb_path}")
+
+    all_vertices = np.concatenate(vertices, axis=0)
+    if all_vertices.ndim != 2 or all_vertices.shape[1] != 3 or not np.isfinite(all_vertices).all():
+        raise ValueError(f"GLB contains invalid mesh vertices: {glb_path}")
+
+    bounds_min = all_vertices.min(axis=0)
+    bounds_max = all_vertices.max(axis=0)
+    center = (bounds_min + bounds_max) * 0.5
+    extents = bounds_max - bounds_min
+    body = builder.add_body(
+        xform=wp.transform((0.0, 0.0, args.z), wp.quat_identity()),
+        com=wp.vec3(*center),
+        inertia=_box_inertia(args.glb_mass, extents),
+        mass=args.glb_mass,
+        label=glb_path.stem,
+        lock_inertia=True,
+    )
+
+    exact_mesh_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+    visual_only_cfg = newton.ModelBuilder.ShapeConfig(
+        density=0.0,
+        has_shape_collision=False,
+        has_particle_collision=False,
+        is_visible=True,
+    )
+    convex_collision_cfg = newton.ModelBuilder.ShapeConfig(
+        density=0.0,
+        is_visible=args.show_colliders,
+    )
+    for mesh_index, mesh in enumerate(meshes):
+        label = f"{glb_path.stem}/mesh_{mesh_index}"
+        if args.glb_collision == "mesh":
+            builder.add_shape_mesh(body, mesh=mesh, cfg=exact_mesh_cfg, label=label)
+        else:
+            builder.add_shape_mesh(body, mesh=mesh, cfg=visual_only_cfg, label=f"{label}/visual")
+            builder.add_shape_convex_hull(
+                body,
+                mesh=mesh,
+                cfg=convex_collision_cfg,
+                label=f"{label}/collision",
+            )
+
+
+def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Model, newton.State, JointControlPanel]:
+    is_glb = asset_path.suffix.lower() == ".glb"
+    builder = newton.ModelBuilder(
+        up_axis=newton.Axis.Z,
+        gravity=-9.81 if args.simulate or is_glb else 0.0,
+    )
+
+    if is_glb:
+        _add_glb(builder, args, asset_path)
+    elif asset_path.suffix.lower() == ".urdf":
+        builder.add_urdf(
+            str(asset_path),
+            xform=wp.transform((0.0, 0.0, args.z), wp.quat_identity()),
+            floating=args.floating,
+            scale=args.scale,
+            up_axis=newton.Axis.Z,
+            enable_self_collisions=args.self_collisions,
+            collapse_fixed_joints=args.collapse_fixed_joints,
+            force_show_colliders=args.show_colliders,
+        )
+    else:
+        raise ValueError(f"Expected a .urdf or .glb file, got: {asset_path}")
 
     if args.ground:
         builder.add_ground_plane()
 
+    if (args.simulate or is_glb) and args.solver == "vbd":
+        prepare_builder_for_solver(builder, args.solver)
+
     model = builder.finalize()
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-    articulation_metadata = load_articulation_metadata(urdf_path)
+    articulation_metadata = (
+        ArticulationMetadata(path=None, model_id=None, records_by_pid={}, explicit_dependencies=[])
+        if is_glb
+        else load_articulation_metadata(asset_path)
+    )
     joint_panel = JointControlPanel(
         model,
         state,
@@ -69,7 +204,7 @@ def build_model(args: argparse.Namespace, urdf_path: Path) -> tuple[newton.Model
 @dataclass
 class LoadedAsset:
     index: int
-    urdf_path: Path
+    asset_path: Path
     model: newton.Model
     state: newton.State
     joint_panel: JointControlPanel
@@ -79,12 +214,32 @@ class LoadedAsset:
     contacts: Any | None
     traction_monitor: TractionForceMonitor | None
 
+    @property
+    def urdf_path(self) -> Path:
+        """Compatibility name retained for integrations written before GLB support."""
+        return self.asset_path
+
 
 class AssetBrowser:
-    def __init__(self, urdfs: list[Path], current_index: int) -> None:
+    def __init__(
+        self,
+        urdfs: list[Path],
+        current_index: int,
+        file_picker: Callable[[Path], Path | None] | None = None,
+        self_collisions_enabled: bool = False,
+        collapse_fixed_joints_enabled: bool = False,
+        floating_enabled: bool = True,
+        solver_name: str = "mujoco",
+    ) -> None:
         self.urdfs = urdfs
         self.current_index = current_index
+        self.file_picker = file_picker or choose_asset_file
+        self.self_collisions_enabled = self_collisions_enabled
+        self.collapse_fixed_joints_enabled = collapse_fixed_joints_enabled
+        self.floating_enabled = floating_enabled
+        self.solver_name = solver_name
         self.requested_index: int | None = None
+        self.file_error: str | None = None
         self.last_copied_model_id: str | None = None
         self.copy_error_model_id: str | None = None
         self.last_panel_scroll_y: float | None = None
@@ -93,7 +248,7 @@ class AssetBrowser:
     def _build_tree(self, urdfs: list[Path]) -> dict[str, dict[str, list[tuple[int, str]]]]:
         tree: dict[str, dict[str, list[tuple[int, str]]]] = {}
         for index, urdf_path in enumerate(urdfs):
-            parts = describe_urdf_path(urdf_path).split("/")
+            parts = describe_asset_path(urdf_path).split("/")
             category = parts[0] if parts else "assets"
             provider = parts[1] if len(parts) > 2 else "models"
             model_name = parts[-1] if parts else urdf_path.stem
@@ -106,6 +261,90 @@ class AssetBrowser:
             for category, providers in sorted(tree.items())
         }
 
+    def request_asset(self, asset_path: Path) -> int:
+        """Add a selected URDF/GLB to the browser, if needed, and request it."""
+        candidate = Path(asset_path).expanduser()
+        if candidate.suffix.lower() not in SUPPORTED_ASSET_SUFFIXES:
+            raise ValueError(f"Expected a .urdf or .glb file, got: {candidate}")
+
+        candidate = candidate.resolve(strict=True)
+        if not candidate.is_file():
+            raise ValueError(f"Expected a file, got: {candidate}")
+
+        index = next(
+            (
+                existing_index
+                for existing_index, existing_path in enumerate(self.urdfs)
+                if existing_path.resolve() == candidate
+            ),
+            None,
+        )
+        if index is None:
+            self.urdfs.append(candidate)
+            index = len(self.urdfs) - 1
+            self.tree = self._build_tree(self.urdfs)
+
+        self.requested_index = index
+        self.file_error = None
+        return index
+
+    def request_urdf(self, urdf_path: Path) -> int:
+        """Backward-compatible name for request_asset()."""
+        return self.request_asset(urdf_path)
+
+    def open_asset_dialog(self) -> None:
+        """Ask the user for a URDF/GLB path and queue it for loading."""
+        self.file_error = None
+        try:
+            selected = self.file_picker(self.urdfs[self.current_index].parent)
+            if selected is not None:
+                self.request_asset(selected)
+        except Exception as exc:
+            self.file_error = str(exc) or type(exc).__name__
+
+    def open_urdf_dialog(self) -> None:
+        """Backward-compatible name for open_asset_dialog()."""
+        self.open_asset_dialog()
+
+    def set_self_collisions(self, enabled: bool) -> bool:
+        """Update self-collision handling and queue the current asset for rebuilding."""
+        if enabled == self.self_collisions_enabled:
+            return False
+
+        self.self_collisions_enabled = enabled
+        self.requested_index = self.current_index
+        return True
+
+    def set_solver(self, solver_name: str) -> bool:
+        """Select a physics solver and queue the current asset for rebuilding."""
+        if solver_name not in SOLVER_NAMES:
+            choices = ", ".join(SOLVER_NAMES)
+            raise ValueError(f"Unknown solver {solver_name!r}; expected one of: {choices}")
+        if solver_name == self.solver_name:
+            return False
+
+        self.solver_name = solver_name
+        self.requested_index = self.current_index
+        return True
+
+    def set_collapse_fixed_joints(self, enabled: bool) -> bool:
+        """Update fixed-joint collapsing and queue the current URDF for rebuilding."""
+        if enabled == self.collapse_fixed_joints_enabled:
+            return False
+
+        self.collapse_fixed_joints_enabled = enabled
+        self.requested_index = self.current_index
+        return True
+
+    def set_floating(self, enabled: bool) -> bool:
+        """Update URDF root mobility and queue the current asset for rebuilding."""
+        if enabled == self.floating_enabled:
+            return False
+
+        self.floating_enabled = enabled
+        self.requested_index = self.current_index
+        return True
+
     def render_ui(self, imgui) -> None:
         widen_imgui_scrollbar(imgui)
         self.last_panel_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_panel_scroll_y)
@@ -114,8 +353,9 @@ class AssetBrowser:
             return
 
         imgui.text(f"Current: {self.current_index:03d} / {len(self.urdfs) - 1:03d}")
-        imgui.text(describe_urdf_path(self.urdfs[self.current_index]))
-        model_id = copyable_model_id_from_urdf(self.urdfs[self.current_index])
+        current_asset = self.urdfs[self.current_index]
+        imgui.text(describe_asset_path(current_asset))
+        model_id = copyable_model_id_from_asset(current_asset)
         imgui.text(f"Model ID: {model_id}")
 
         if imgui.button("Copy Model ID##asset_copy_model_id"):
@@ -132,6 +372,44 @@ class AssetBrowser:
         elif self.copy_error_model_id == model_id:
             imgui.same_line()
             imgui.text("Copy failed")
+
+        if imgui.button("Import Asset...##asset_import"):
+            self.open_asset_dialog()
+        if self.file_error is not None:
+            imgui.text(f"Import failed: {self.file_error}")
+
+        if current_asset.suffix.lower() == ".urdf":
+            changed, self_collisions_enabled = imgui.checkbox(
+                "Enable Self Collisions##asset_self_collisions",
+                self.self_collisions_enabled,
+            )
+            if changed:
+                self.set_self_collisions(self_collisions_enabled)
+
+            changed, collapse_fixed_joints_enabled = imgui.checkbox(
+                "Collapse Fixed Joints##asset_collapse_fixed_joints",
+                self.collapse_fixed_joints_enabled,
+            )
+            if changed:
+                self.set_collapse_fixed_joints(collapse_fixed_joints_enabled)
+
+            changed, floating_enabled = imgui.checkbox(
+                "Floating Base##asset_floating",
+                self.floating_enabled,
+            )
+            if changed:
+                self.set_floating(floating_enabled)
+        else:
+            imgui.text("GLB rigid body: right-drag to test physics")
+
+        solver_index = SOLVER_NAMES.index(self.solver_name)
+        changed, solver_index = imgui.combo(
+            "Physics Solver##asset_solver",
+            solver_index,
+            [SOLVER_LABELS[name] for name in SOLVER_NAMES],
+        )
+        if changed:
+            self.set_solver(SOLVER_NAMES[solver_index])
 
         if imgui.button("Reload##asset_reload"):
             self.requested_index = self.current_index
@@ -173,12 +451,14 @@ class AssetViewerRuntime:
         viewer: newton.viewer.ViewerGL,
         double_sided_state: dict[str, bool],
         asset_browser: AssetBrowser,
+        camera_controls: CameraControlPanel | None = None,
     ) -> None:
         self.args = args
         self.urdfs = urdfs
         self.viewer = viewer
         self.double_sided_state = double_sided_state
         self.asset_browser = asset_browser
+        self.camera_controls = camera_controls
         self.loaded: LoadedAsset | None = None
         self.sim_time = 0.0
 
@@ -186,19 +466,29 @@ class AssetViewerRuntime:
         if index < 0 or index >= len(self.urdfs):
             raise IndexError(f"Asset index must be between 0 and {len(self.urdfs) - 1}; got {index}")
 
-        urdf_path = self.urdfs[index]
-        label = describe_urdf_path(urdf_path)
+        asset_path = self.urdfs[index]
+        label = describe_asset_path(asset_path)
+        self.args.self_collisions = self.asset_browser.self_collisions_enabled
+        self.args.collapse_fixed_joints = self.asset_browser.collapse_fixed_joints_enabled
+        self.args.floating = self.asset_browser.floating_enabled
+        self.args.solver = self.asset_browser.solver_name
         if show_splash:
             self._show_splash(f"Loading {label}...")
 
         try:
-            model, state, joint_panel = build_model(self.args, urdf_path)
+            model, state, joint_panel = build_model(self.args, asset_path)
             solver = None
             state_next = None
             control = None
             contacts = None
-            if self.args.simulate:
-                solver = newton.solvers.SolverXPBD(model, iterations=self.args.iterations)
+            physics_enabled = self.args.simulate or asset_path.suffix.lower() == ".glb"
+            if physics_enabled:
+                try:
+                    solver = create_solver(model, self.args.solver, self.args.iterations)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to initialize {SOLVER_LABELS[self.args.solver]} solver for {asset_path}: {exc}"
+                    ) from exc
                 state_next = model.state()
                 control = model.control()
                 contacts = model.contacts()
@@ -212,19 +502,21 @@ class AssetViewerRuntime:
                 self.args.pitch,
                 self.args.yaw,
             )
+            if self.camera_controls is not None:
+                self.camera_controls.set_asset(compute_asset_bounds(model, state), model, state)
             set_double_sided_rendering(self.viewer, self.double_sided_state["enabled"])
-            self._set_reset_callback(joint_panel.reset)
+            self._set_reset_callback(self._make_reset_callback(joint_panel, solver))
 
             traction_monitor = (
                 TractionForceMonitor(model, self.args.traction_print_hz, self.args.print_traction_force)
-                if self.args.simulate
+                if physics_enabled
                 else None
             )
             self._register_asset_ui(joint_panel, traction_monitor)
 
             self.loaded = LoadedAsset(
                 index=index,
-                urdf_path=urdf_path,
+                asset_path=asset_path,
                 model=model,
                 state=state,
                 joint_panel=joint_panel,
@@ -236,7 +528,7 @@ class AssetViewerRuntime:
             )
             self.asset_browser.current_index = index
             self.sim_time = 0.0
-            self._print_loaded_summary(label, urdf_path, model, joint_panel)
+            self._print_loaded_summary(label, asset_path, model, joint_panel)
         finally:
             if show_splash:
                 self._hide_splash()
@@ -257,6 +549,14 @@ class AssetViewerRuntime:
         else:
             self.viewer._reset_callback = callback
 
+    def _make_reset_callback(self, joint_panel: JointControlPanel, solver: Any | None):
+        def reset() -> None:
+            joint_panel.reset()
+            if solver is not None:
+                solver.reset(joint_panel.state)
+
+        return reset
+
     def _show_splash(self, text: str) -> None:
         if not hasattr(self.viewer, "show_loading_splash"):
             return
@@ -272,17 +572,27 @@ class AssetViewerRuntime:
     def _print_loaded_summary(
         self,
         label: str,
-        urdf_path: Path,
+        asset_path: Path,
         model: newton.Model,
         joint_panel: JointControlPanel,
     ) -> None:
-        print(f"Opening {label}: {urdf_path}")
+        print(f"Opening {label}: {asset_path}")
         print(
             f"Loaded {model.body_count} bodies, {model.joint_count} joints, "
             f"{model.shape_count} shapes, {model.joint_coord_count} joint coords."
         )
-        print(f"Articulation metadata: {describe_metadata(joint_panel.articulation_metadata)}")
-        print(f"Interactive controls: {len(joint_panel.controls)} joint controls in the left panel.")
+        if self.args.simulate or asset_path.suffix.lower() == ".glb":
+            print(f"Physics solver: {SOLVER_LABELS[self.args.solver]}")
+        if asset_path.suffix.lower() == ".glb":
+            print(
+                f"GLB rigid body: mass={self.args.glb_mass:g} kg, "
+                f"collision={self.args.glb_collision}; right-drag to apply picking forces."
+            )
+        else:
+            print(f"Floating base: {self.args.floating}")
+            print(f"Collapse fixed joints: {self.args.collapse_fixed_joints}")
+            print(f"Articulation metadata: {describe_metadata(joint_panel.articulation_metadata)}")
+            print(f"Interactive controls: {len(joint_panel.controls)} joint controls in the left panel.")
 
 
 def set_double_sided_rendering(viewer: newton.viewer.ViewerGL, enabled: bool) -> None:
@@ -291,6 +601,15 @@ def set_double_sided_rendering(viewer: newton.viewer.ViewerGL, enabled: bool) ->
     for obj in objects.values():
         if hasattr(obj, "backface_culling"):
             obj.backface_culling = not enabled
+
+
+def viewer_requests_physics_step(viewer: Any) -> bool:
+    """Keep a paused simulation responsive while the user right-drags a body."""
+    if viewer.should_step():
+        return True
+    picking = getattr(viewer, "picking", None)
+    is_picking = getattr(picking, "is_picking", None)
+    return bool(is_picking()) if callable(is_picking) else False
 
 
 def run_viewer(
@@ -302,12 +621,34 @@ def run_viewer(
         width=args.width,
         height=args.height,
         headless=args.headless,
-        paused=not (args.simulate and args.start_running),
+        paused=not (args.start_running and (args.simulate or urdfs[initial_index].suffix.lower() == ".glb")),
     )
 
     double_sided_state = {"enabled": args.double_sided}
-    asset_browser = AssetBrowser(urdfs, initial_index)
-    runtime = AssetViewerRuntime(args, urdfs, viewer, double_sided_state, asset_browser)
+    asset_browser = AssetBrowser(
+        urdfs,
+        initial_index,
+        self_collisions_enabled=args.self_collisions,
+        collapse_fixed_joints_enabled=args.collapse_fixed_joints,
+        floating_enabled=args.floating,
+        solver_name=args.solver,
+    )
+    camera_controls = CameraControlPanel(
+        viewer,
+        auto_frame=args.auto_frame,
+        padding=args.camera_padding,
+        speed=args.camera_speed,
+        wheel_sensitivity=args.camera_wheel_sensitivity,
+        fine_scale=args.camera_fine_scale,
+    )
+    runtime = AssetViewerRuntime(
+        args,
+        urdfs,
+        viewer,
+        double_sided_state,
+        asset_browser,
+        camera_controls,
+    )
 
     if hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(asset_browser.render_ui, position="panel")
@@ -320,6 +661,7 @@ def run_viewer(
         set_double_sided_rendering(viewer, double_sided_state["enabled"])
 
     if hasattr(viewer, "register_ui_callback"):
+        viewer.register_ui_callback(camera_controls.render_ui, position="rendering")
         viewer.register_ui_callback(render_double_sided_option, position="rendering")
 
     runtime.load(initial_index)
@@ -328,7 +670,8 @@ def run_viewer(
     sim_dt = frame_dt / args.substeps
     frame = 0
 
-    if not args.simulate and args.print_traction_force:
+    has_glb = any(path.suffix.lower() == ".glb" for path in urdfs)
+    if not args.simulate and not has_glb and args.print_traction_force:
         print("Traction force printing is idle because --simulate is off.")
 
     while viewer.is_running():
@@ -340,7 +683,7 @@ def run_viewer(
         if loaded is None:
             break
 
-        if args.simulate and viewer.should_step():
+        if loaded.solver is not None and viewer_requests_physics_step(viewer):
             assert loaded.solver is not None
             assert loaded.state_next is not None
             assert loaded.control is not None
@@ -360,6 +703,8 @@ def run_viewer(
 
         loaded.joint_panel.set_state(loaded.state)
         loaded.joint_panel.update_continuous_motion(frame_dt)
+        camera_controls.set_state(loaded.state)
+        camera_controls.apply_sensitivity()
 
         viewer.begin_frame(runtime.sim_time)
         viewer.log_state(loaded.state)
@@ -375,26 +720,67 @@ def run_viewer(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="View Artiverse URDF assets with Newton.")
+    parser = argparse.ArgumentParser(description="Inspect URDF and GLB assets with Newton.")
     parser.add_argument(
         "source",
         nargs="?",
         type=Path,
         default=DEFAULT_SOURCE,
-        help="Artiverse data root, one category directory, one model directory, or one .urdf file.",
+        help="Asset directory, one .urdf file, or one .glb file.",
     )
-    parser.add_argument("--list", action="store_true", help="List matching URDF files and exit.")
+    parser.add_argument("--list", action="store_true", help="List matching asset files and exit.")
     parser.add_argument(
         "--category",
         action="append",
         default=None,
         help="Limit discovery to a category folder, e.g. microwave or scissors. Repeat for multiple categories.",
     )
-    parser.add_argument("--index", type=int, default=0, help="URDF index to open when source contains many models.")
+    parser.add_argument("--index", type=int, default=0, help="Asset index to open when source contains many models.")
     parser.add_argument("--scale", type=float, default=1.0)
-    parser.add_argument("--z", type=float, default=0.0, help="Vertical offset for the imported model.")
-    parser.add_argument("--ground", action="store_true", help="Add a ground plane.")
+    parser.add_argument(
+        "--glb-mass",
+        type=float,
+        default=1.0,
+        help="Mass in kilograms assigned to an imported GLB rigid body.",
+    )
+    parser.add_argument(
+        "--glb-collision",
+        choices=("mesh", "convex"),
+        default="mesh",
+        help="GLB collider: exact triangle mesh for inspection or per-primitive convex hull for robust dynamics.",
+    )
+    parser.add_argument(
+        "--glb-max-hull-vertices",
+        type=int,
+        default=64,
+        help="Maximum convex-hull vertices per GLB primitive.",
+    )
+    parser.add_argument("--z", type=float, default=5.0, help="Vertical offset for the imported model.")
+    parser.add_argument(
+        "--ground",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Add a ground plane at z=0 (enabled by default).",
+    )
     parser.add_argument("--show-colliders", action="store_true", help="Show collision meshes even when visual meshes exist.")
+    parser.add_argument(
+        "--self-collisions",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable collisions between links in the same imported asset.",
+    )
+    parser.add_argument(
+        "--collapse-fixed-joints",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Merge bodies connected by fixed joints (disabled by default).",
+    )
+    parser.add_argument(
+        "--floating",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Import a URDF with a free-floating root body (enabled by default).",
+    )
     parser.add_argument(
         "--double-sided",
         action=argparse.BooleanOptionalAction,
@@ -420,7 +806,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Apply a state from *.articulations.json on startup, e.g. closed.",
     )
-    parser.add_argument("--simulate", action="store_true", help="Run Newton dynamics instead of static viewing.")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Run Newton dynamics for URDF assets. GLB rigid bodies are always physics-enabled for dragging.",
+    )
     parser.add_argument(
         "--start-running",
         action="store_true",
@@ -444,28 +834,86 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=4)
-    parser.add_argument("--iterations", type=int, default=10)
+    parser.add_argument(
+        "--solver",
+        choices=SOLVER_NAMES,
+        default="mujoco",
+        help="Physics solver to use (default: mujoco).",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=10,
+        help="Iteration count for XPBD, VBD, and MuJoCo solvers.",
+    )
     parser.add_argument("--camera-x", type=float, default=0.65)
     parser.add_argument("--camera-y", type=float, default=-0.75)
-    parser.add_argument("--camera-z", type=float, default=0.45)
+    parser.add_argument("--camera-z", type=float, default=5.0)
     parser.add_argument("--pitch", type=float, default=-25.0)
     parser.add_argument("--yaw", type=float, default=40.0)
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--auto-frame",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Automatically point the camera at and frame each loaded asset.",
+    )
+    parser.add_argument(
+        "--camera-padding",
+        type=float,
+        default=1.35,
+        help="Padding around an automatically framed asset.",
+    )
+    parser.add_argument(
+        "--camera-speed",
+        type=float,
+        default=None,
+        help="Keyboard camera speed in m/s (default: automatic based on asset size).",
+    )
+    parser.add_argument(
+        "--camera-wheel-sensitivity",
+        type=float,
+        default=0.08,
+        help="Mouse-wheel dolly sensitivity.",
+    )
+    parser.add_argument(
+        "--camera-fine-scale",
+        type=float,
+        default=0.1,
+        help="Sensitivity multiplier while Shift or Fine Camera Mode is active.",
+    )
+    args = parser.parse_args(argv)
+    if args.scale <= 0.0:
+        parser.error("--scale must be greater than 0")
+    if args.glb_mass <= 0.0:
+        parser.error("--glb-mass must be greater than 0")
+    if args.glb_max_hull_vertices < 4:
+        parser.error("--glb-max-hull-vertices must be at least 4")
+    if args.iterations < 1:
+        parser.error("--iterations must be at least 1")
+    if args.camera_padding <= 0.0:
+        parser.error("--camera-padding must be greater than 0")
+    if args.camera_speed is not None and args.camera_speed <= 0.0:
+        parser.error("--camera-speed must be greater than 0")
+    if args.camera_wheel_sensitivity <= 0.0:
+        parser.error("--camera-wheel-sensitivity must be greater than 0")
+    if not 0.0 < args.camera_fine_scale <= 1.0:
+        parser.error("--camera-fine-scale must be in the range (0, 1]")
+    return args
 
 
 def main() -> None:
     args = parse_args()
     categories = tuple(args.category) if args.category else None
-    urdfs = find_urdfs(args.source, categories)
+    assets = find_assets(args.source, categories)
 
     if args.list:
-        print_urdfs(urdfs)
+        print_assets(assets)
         return
 
-    if args.index < 0 or args.index >= len(urdfs):
-        raise IndexError(f"--index must be between 0 and {len(urdfs) - 1}; got {args.index}")
+    if args.index < 0 or args.index >= len(assets):
+        raise IndexError(f"--index must be between 0 and {len(assets) - 1}; got {args.index}")
 
-    run_viewer(args, urdfs, args.index)
+    run_viewer(args, assets, args.index)
 
 
 if __name__ == "__main__":
