@@ -1,6 +1,0 @@
-pygltflib
-trimesh
-tqdm
-meshcat
-open3d
-blenderproc
