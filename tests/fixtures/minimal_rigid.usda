@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Box" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        bool physics:rigidBodyEnabled = true
+        float physics:mass = 1
+
+        def Cube "Geometry" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            bool physics:collisionEnabled = true
+            color3f[] primvars:displayColor = [(0.2, 0.6, 0.9)]
+            double size = 0.2
+        }
+    }
+}

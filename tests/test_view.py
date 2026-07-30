@@ -3,10 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 import view
+
+
+TEST_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 MINIMAL_ARTICULATED_URDF = """\
@@ -42,6 +46,13 @@ MINIMAL_ARTICULATED_URDF = """\
     <axis xyz="0 0 1"/>
     <limit lower="0" upper="1.57" effort="10" velocity="1"/>
   </joint>
+</robot>
+"""
+
+MALFORMED_URDF = """\
+<?xml version="1.0"?>
+<robot name="malformed">
+  <link name="base">
 </robot>
 """
 
@@ -117,6 +128,59 @@ class AssetPoseFidelityTests(unittest.TestCase):
             self.assertTrue(any(flags & int(newton.ShapeFlags.VISIBLE) for flags in shape_flags))
             self.assertTrue(any(flags & int(newton.ShapeFlags.COLLIDE_SHAPES) for flags in shape_flags))
 
+    def test_usd_import_uses_physics_settings_and_authored_root_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usd_path = Path(temp_dir) / "asset.usda"
+            usd_path.write_text("#usda 1.0\n", encoding="utf-8")
+            args = view.parse_args(
+                [
+                    str(usd_path),
+                    "--self-collisions",
+                    "--collapse-fixed-joints",
+                    "--show-colliders",
+                ]
+            )
+
+            def add_test_body(builder, _source, **_kwargs):
+                builder.add_body(mass=1.0, label="usd_test_body")
+                return {}
+
+            with mock.patch(
+                "asset_viewer.app.newton.ModelBuilder.add_usd",
+                autospec=True,
+                side_effect=add_test_body,
+            ) as add_usd:
+                view.build_model(args, usd_path)
+
+            kwargs = add_usd.call_args.kwargs
+            self.assertIsNone(kwargs["floating"])
+            self.assertTrue(kwargs["enable_self_collisions"])
+            self.assertTrue(kwargs["collapse_fixed_joints"])
+            self.assertTrue(kwargs["force_show_colliders"])
+
+    def test_usd_root_mode_maps_floating_and_fixed_to_newton(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usd_path = Path(temp_dir) / "asset.usda"
+            usd_path.write_text("#usda 1.0\n", encoding="utf-8")
+
+            for root_mode, expected in (("floating", True), ("fixed", False)):
+                with self.subTest(root_mode=root_mode):
+                    args = view.parse_args(
+                        [str(usd_path), "--usd-root-mode", root_mode, "--no-ground"]
+                    )
+                    def add_test_body(builder, _source, **_kwargs):
+                        builder.add_body(mass=1.0, label="usd_test_body")
+                        return {}
+
+                    with mock.patch(
+                        "asset_viewer.app.newton.ModelBuilder.add_usd",
+                        autospec=True,
+                        side_effect=add_test_body,
+                    ) as add_usd:
+                        view.build_model(args, usd_path)
+
+                    self.assertIs(add_usd.call_args.kwargs["floating"], expected)
+
 
 class AssetDiscoveryTests(unittest.TestCase):
     def test_direct_glb_file_is_discovered(self) -> None:
@@ -126,15 +190,50 @@ class AssetDiscoveryTests(unittest.TestCase):
 
             self.assertEqual(view.find_assets(glb_path), [glb_path])
 
-    def test_urdf_discovery_remains_preferred_for_mixed_directories(self) -> None:
+    def test_mixed_directory_lists_every_supported_asset_format(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             urdf_path = root / "asset.urdf"
             glb_path = root / "asset.glb"
             urdf_path.write_text(MINIMAL_ARTICULATED_URDF, encoding="utf-8")
             glb_path.write_bytes(b"placeholder")
+            usd_paths = [root / f"asset{suffix}" for suffix in view.USD_ASSET_SUFFIXES]
+            for usd_path in usd_paths:
+                usd_path.write_bytes(b"placeholder")
 
-            self.assertEqual(view.find_assets(root), [urdf_path])
+            expected = sorted([urdf_path, glb_path, *usd_paths], key=lambda path: str(path).lower())
+            self.assertEqual(view.find_assets(root), expected)
+
+    def test_each_usd_suffix_is_accepted_as_a_direct_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for suffix in view.USD_ASSET_SUFFIXES:
+                with self.subTest(suffix=suffix):
+                    usd_path = Path(temp_dir) / f"asset{suffix}"
+                    usd_path.write_bytes(b"placeholder")
+
+                    self.assertEqual(view.find_assets(usd_path), [usd_path])
+
+    def test_malformed_urdf_is_skipped_during_directory_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            valid_dir = root / "valid" / "urdf_w_collider"
+            invalid_dir = root / "invalid" / "urdf_w_collider"
+            valid_dir.mkdir(parents=True)
+            invalid_dir.mkdir(parents=True)
+            valid_path = valid_dir / "valid.urdf"
+            invalid_path = invalid_dir / "invalid.urdf"
+            valid_path.write_text(MINIMAL_ARTICULATED_URDF, encoding="utf-8")
+            invalid_path.write_text(MALFORMED_URDF, encoding="utf-8")
+
+            self.assertEqual(view.find_assets(root), [valid_path])
+
+    def test_direct_malformed_urdf_reports_xml_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            urdf_path = Path(temp_dir) / "broken.urdf"
+            urdf_path.write_text(MALFORMED_URDF, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, r"broken\.urdf.*line 4"):
+                view.find_assets(urdf_path)
 
 
 class AssetBrowserFileSelectionTests(unittest.TestCase):
@@ -170,6 +269,7 @@ class AssetBrowserFileSelectionTests(unittest.TestCase):
         self.assertIsNone(selected)
         self.assertEqual(calls[-1], ("destroy",))
         self.assertIn(("GLB files", "*.glb"), dialog_kwargs["filetypes"])
+        self.assertIn(("USD files", "*.usd *.usda *.usdc *.usdz"), dialog_kwargs["filetypes"])
 
     def test_selected_urdf_is_added_and_requested(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -189,6 +289,20 @@ class AssetBrowserFileSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             first = Path(temp_dir) / "first.urdf"
             selected = Path(temp_dir) / "selected.glb"
+            first.write_text(MINIMAL_ARTICULATED_URDF, encoding="utf-8")
+            selected.write_bytes(b"placeholder")
+            browser = view.AssetBrowser([first], 0, file_picker=lambda _initial_dir: selected)
+
+            browser.open_asset_dialog()
+
+            self.assertEqual(browser.urdfs, [first, selected.resolve()])
+            self.assertEqual(browser.consume_request(), 1)
+            self.assertIsNone(browser.file_error)
+
+    def test_selected_usd_is_added_and_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "first.urdf"
+            selected = Path(temp_dir) / "selected.usdc"
             first.write_text(MINIMAL_ARTICULATED_URDF, encoding="utf-8")
             selected.write_bytes(b"placeholder")
             browser = view.AssetBrowser([first], 0, file_picker=lambda _initial_dir: selected)
@@ -233,7 +347,61 @@ class AssetBrowserFileSelectionTests(unittest.TestCase):
 
             self.assertEqual(browser.urdfs, [urdf_path])
             self.assertIsNone(browser.consume_request())
-            self.assertIn("Expected a .urdf or .glb file", browser.file_error or "")
+            self.assertIn("Expected a supported asset file", browser.file_error or "")
+
+    def test_malformed_selected_urdf_is_reported_without_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "first.urdf"
+            malformed = Path(temp_dir) / "malformed.urdf"
+            first.write_text(MINIMAL_ARTICULATED_URDF, encoding="utf-8")
+            malformed.write_text(MALFORMED_URDF, encoding="utf-8")
+            browser = view.AssetBrowser([first], 0, file_picker=lambda _initial_dir: malformed)
+
+            browser.open_urdf_dialog()
+
+            self.assertEqual(browser.urdfs, [first])
+            self.assertIsNone(browser.consume_request())
+            self.assertIn("Malformed URDF XML", browser.file_error or "")
+
+
+class AssetRuntimeLoadErrorTests(unittest.TestCase):
+    def test_malformed_urdf_does_not_escape_runtime_or_replace_loaded_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            malformed = Path(temp_dir) / "malformed.urdf"
+            malformed.write_text(MALFORMED_URDF, encoding="utf-8")
+            args = view.parse_args([str(malformed)])
+            browser = view.AssetBrowser([malformed], 0)
+
+            class FakeViewer:
+                pass
+
+            runtime = view.AssetViewerRuntime(
+                args,
+                [malformed],
+                FakeViewer(),
+                {"enabled": True},
+                browser,
+            )
+
+            self.assertFalse(runtime.load(0))
+            self.assertIsNone(runtime.loaded)
+            self.assertIn("Malformed URDF XML", browser.file_error or "")
+
+
+class WarpCpuFallbackTests(unittest.TestCase):
+    def test_cpu_only_viewer_uses_pageable_memory_for_pinned_requests(self) -> None:
+        class FakeCpuDevice:
+            default_allocator = object()
+            pinned_allocator = object()
+
+        cpu = FakeCpuDevice()
+        with (
+            mock.patch("asset_viewer.app.wp.is_cuda_available", return_value=False),
+            mock.patch("asset_viewer.app.wp.get_device", return_value=cpu),
+        ):
+            self.assertTrue(view.configure_warp_cpu_fallback())
+
+        self.assertIs(cpu.pinned_allocator, cpu.default_allocator)
 
 
 class PhysicsStepRequestTests(unittest.TestCase):
@@ -394,6 +562,47 @@ class FloatingRootTests(unittest.TestCase):
             self.assertEqual(floating_model.joint_coord_count, fixed_model.joint_coord_count + 7)
             self.assertIn(int(newton.JointType.FREE), floating_model.joint_type.numpy())
             self.assertEqual(len(floating_panel.controls), len(fixed_panel.controls))
+
+
+class UsdRootModeTests(unittest.TestCase):
+    def test_usd_root_mode_defaults_to_authored(self) -> None:
+        self.assertEqual(view.parse_args([]).usd_root_mode, "authored")
+
+    def test_all_usd_root_modes_are_accepted(self) -> None:
+        for mode in view.USD_ROOT_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    view.parse_args(["--usd-root-mode", mode]).usd_root_mode,
+                    mode,
+                )
+
+    def test_changing_usd_root_mode_requests_current_asset_reload(self) -> None:
+        browser = view.AssetBrowser([Path("asset.usda")], 0)
+
+        changed = browser.set_usd_root_mode("fixed")
+
+        self.assertTrue(changed)
+        self.assertEqual(browser.usd_root_mode, "fixed")
+        self.assertEqual(browser.consume_request(), 0)
+        self.assertFalse(browser.set_usd_root_mode("fixed"))
+
+
+class UsdIntegrationTests(unittest.TestCase):
+    def test_minimal_physics_usd_builds_a_dynamic_rigid_body(self) -> None:
+        import newton
+
+        usd_path = TEST_FIXTURES / "minimal_rigid.usda"
+        args = view.parse_args(
+            [str(usd_path), "--no-ground", "--z", "0", "--usd-root-mode", "authored"]
+        )
+
+        model, _state, joint_panel = view.build_model(args, usd_path)
+
+        self.assertEqual(model.body_count, 1)
+        self.assertEqual(model.shape_count, 1)
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(int(model.joint_type.numpy()[0]), int(newton.JointType.FREE))
+        self.assertEqual(joint_panel.controls, [])
 
 
 class CameraControlTests(unittest.TestCase):

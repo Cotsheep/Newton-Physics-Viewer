@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_SOURCE = Path(r"D:\Datasets\Artiverse\dataset_chunks\data")
-SUPPORTED_ASSET_SUFFIXES = frozenset({".urdf", ".glb"})
+USD_ASSET_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
+SUPPORTED_ASSET_SUFFIXES = frozenset({".urdf", ".glb", *USD_ASSET_SUFFIXES})
 
 
 @dataclass(frozen=True)
@@ -137,7 +139,7 @@ def copyable_model_id_from_urdf(urdf_path: Path) -> str:
 
 
 def describe_asset_path(asset_path: Path) -> str:
-    """Return a compact browser label for a URDF or standalone GLB asset."""
+    """Return a compact browser label for a supported asset."""
     if asset_path.suffix.lower() == ".urdf":
         return describe_urdf_path(asset_path)
 
@@ -203,12 +205,33 @@ def matches_categories(urdf_path: Path, categories: tuple[str, ...] | None) -> b
     return any(part.lower() in wanted for part in urdf_path.parts)
 
 
+def validate_urdf_xml(urdf_path: Path) -> None:
+    """Raise a descriptive error when a URDF is not well-formed XML."""
+    try:
+        ET.parse(urdf_path)
+    except (OSError, ET.ParseError) as exc:
+        raise ValueError(f"Malformed URDF XML: {urdf_path}: {exc}") from exc
+
+
+def _valid_discovered_urdfs(urdf_paths: list[Path]) -> list[Path]:
+    valid: list[Path] = []
+    for urdf_path in urdf_paths:
+        try:
+            validate_urdf_xml(urdf_path)
+        except ValueError as exc:
+            print(f"Skipping {exc}", file=sys.stderr)
+        else:
+            valid.append(urdf_path)
+    return valid
+
+
 def find_urdfs(source: Path, categories: tuple[str, ...] | None = None) -> list[Path]:
     if source.is_file():
         if source.suffix.lower() != ".urdf":
             raise ValueError(f"Expected a .urdf file, got: {source}")
         if not matches_categories(source, categories):
             raise FileNotFoundError(f"No URDF files matched categories {categories}: {source}")
+        validate_urdf_xml(source)
         return [source]
 
     if not source.exists():
@@ -218,42 +241,71 @@ def find_urdfs(source: Path, categories: tuple[str, ...] | None = None) -> list[
     if collider_urdfs:
         filtered = [path for path in collider_urdfs if matches_categories(path, categories)]
         if filtered:
-            return filtered
+            valid = _valid_discovered_urdfs(filtered)
+            if valid:
+                return valid
+            raise FileNotFoundError(f"No valid collider URDF files found under: {source}")
         raise FileNotFoundError(f"No collider URDF files matched categories {categories} under: {source}")
 
     recursive = unique_sorted_paths(list(source.rglob("*.urdf")))
     if recursive:
         filtered = [path for path in recursive if matches_categories(path, categories)]
         if filtered:
-            return filtered
+            valid = _valid_discovered_urdfs(filtered)
+            if valid:
+                return valid
+            raise FileNotFoundError(f"No valid URDF files found under: {source}")
         raise FileNotFoundError(f"No URDF files matched categories {categories} under: {source}")
 
     raise FileNotFoundError(f"No URDF files found under: {source}")
 
 
 def find_assets(source: Path, categories: tuple[str, ...] | None = None) -> list[Path]:
-    """Discover importable assets while preserving URDF-first directory behavior."""
+    """Discover every supported URDF, USD, and GLB asset below a path."""
     if source.is_file():
         if source.suffix.lower() not in SUPPORTED_ASSET_SUFFIXES:
-            raise ValueError(f"Expected a .urdf or .glb file, got: {source}")
+            suffixes = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
+            raise ValueError(f"Expected a supported asset file ({suffixes}), got: {source}")
         if not matches_categories(source, categories):
             raise FileNotFoundError(f"No assets matched categories {categories}: {source}")
+        if source.suffix.lower() == ".urdf":
+            validate_urdf_xml(source)
         return [source]
 
-    try:
-        return find_urdfs(source, categories)
-    except FileNotFoundError as urdf_error:
-        if not source.exists():
-            raise urdf_error
+    if not source.exists():
+        raise FileNotFoundError(source)
 
-    glbs = unique_sorted_paths(list(source.rglob("*.glb")))
-    filtered = [path for path in glbs if matches_categories(path, categories)]
-    if filtered:
-        return filtered
+    collider_urdfs = unique_sorted_paths(list(source.rglob("urdf_w_collider/*.urdf")))
+    urdfs = collider_urdfs or unique_sorted_paths(list(source.rglob("*.urdf")))
+    other_assets = [
+        path
+        for path in source.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_ASSET_SUFFIXES - {".urdf"}
+    ]
+    candidates = unique_sorted_paths([*urdfs, *other_assets])
+    if not candidates:
+        suffixes = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
+        raise FileNotFoundError(f"No supported asset files ({suffixes}) found under: {source}")
 
-    if glbs:
-        raise FileNotFoundError(f"No GLB files matched categories {categories} under: {source}")
-    raise FileNotFoundError(f"No URDF or GLB files found under: {source}")
+    filtered = [path for path in candidates if matches_categories(path, categories)]
+    if not filtered:
+        raise FileNotFoundError(f"No assets matched categories {categories} under: {source}")
+
+    valid: list[Path] = []
+    for path in filtered:
+        if path.suffix.lower() != ".urdf":
+            valid.append(path)
+            continue
+        try:
+            validate_urdf_xml(path)
+        except ValueError as exc:
+            print(f"Skipping {exc}", file=sys.stderr)
+        else:
+            valid.append(path)
+
+    if valid:
+        return valid
+    raise FileNotFoundError(f"No valid supported asset files found under: {source}")
 
 
 def print_urdfs(urdfs: list[Path]) -> None:

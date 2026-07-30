@@ -4,22 +4,31 @@ New code should import from :mod:`asset_viewer`.  This module keeps the
 original `python view.py` command and public names working.
 """
 
+# This compatibility module intentionally re-exports the implementation
+# modules' public API for existing scripts and tests.
+# ruff: noqa: F401
+
 from asset_viewer.app import (
     AssetBrowser,
     AssetViewerRuntime,
     LoadedAsset,
+    USD_ROOT_MODE_LABELS,
+    USD_ROOT_MODES,
     build_model,
     choose_asset_file,
     choose_urdf_file,
+    configure_warp_cpu_fallback,
     main,
     parse_args,
     run_viewer,
     set_double_sided_rendering,
+    usd_root_floating,
     viewer_requests_physics_step,
 )
 from asset_viewer.assets import (
     DEFAULT_SOURCE,
     SUPPORTED_ASSET_SUFFIXES,
+    USD_ASSET_SUFFIXES,
     ArticulationMetadata,
     ArticulationRecord,
     collect_explicit_dependencies,
@@ -38,6 +47,7 @@ from asset_viewer.assets import (
     print_assets,
     print_urdfs,
     unique_sorted_paths,
+    validate_urdf_xml,
 )
 from asset_viewer.controls import (
     BINARY_PRISMATIC_MAX_TRAVEL,

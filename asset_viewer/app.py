@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,7 @@ from newton._src.utils.mesh import load_meshes_from_file
 from .assets import (
     DEFAULT_SOURCE,
     SUPPORTED_ASSET_SUFFIXES,
+    USD_ASSET_SUFFIXES,
     ArticulationMetadata,
     copy_text_to_clipboard,
     copyable_model_id_from_asset,
@@ -24,6 +26,7 @@ from .assets import (
     find_assets,
     load_articulation_metadata,
     print_assets,
+    validate_urdf_xml,
 )
 from .controls import (
     DEFAULT_CONTINUOUS_SPEED_DEGREES,
@@ -34,6 +37,45 @@ from .controls import (
 from .camera import CameraControlPanel, compute_asset_bounds
 from .solvers import SOLVER_LABELS, SOLVER_NAMES, create_solver, prepare_builder_for_solver
 from .traction import TractionForceMonitor
+
+
+USD_ROOT_MODES = ("authored", "floating", "fixed")
+USD_ROOT_MODE_LABELS = {
+    "authored": "Authored",
+    "floating": "Floating",
+    "fixed": "Fixed",
+}
+
+
+def is_usd_asset(asset_path: Path) -> bool:
+    return asset_path.suffix.lower() in USD_ASSET_SUFFIXES
+
+
+def usd_root_floating(root_mode: str) -> bool | None:
+    if root_mode == "authored":
+        return None
+    if root_mode == "floating":
+        return True
+    if root_mode == "fixed":
+        return False
+    choices = ", ".join(USD_ROOT_MODES)
+    raise ValueError(f"Unknown USD root mode {root_mode!r}; expected one of: {choices}")
+
+
+def configure_warp_cpu_fallback() -> bool:
+    """Avoid CUDA-backed pinned allocations when Warp has no usable CUDA device.
+
+    Newton's OpenGL viewer requests pinned host buffers even on its CPU render
+    path. Warp implements those buffers through the CUDA driver, so the request
+    fails on systems where the CUDA toolkit is present but the driver is not.
+    Ordinary pageable host memory is sufficient for the viewer's CPU path.
+    """
+    if wp.is_cuda_available():
+        return False
+
+    cpu_device = wp.get_device("cpu")
+    cpu_device.pinned_allocator = cpu_device.default_allocator
+    return True
 
 
 def choose_asset_file(
@@ -58,11 +100,12 @@ def choose_asset_file(
         root.update_idletasks()
         selected = askopenfilename(
             parent=root,
-            title="Import URDF or GLB asset",
+            title="Import URDF, USD, or GLB asset",
             initialdir=str(initial_dir),
             filetypes=(
-                ("Supported assets", "*.urdf *.glb"),
+                ("Supported assets", "*.urdf *.usd *.usda *.usdc *.usdz *.glb"),
                 ("URDF files", "*.urdf"),
+                ("USD files", "*.usd *.usda *.usdc *.usdz"),
                 ("GLB files", "*.glb"),
                 ("All files", "*.*"),
             ),
@@ -79,7 +122,7 @@ def choose_urdf_file(
     root_factory: Callable[[], Any] | None = None,
     askopenfilename: Callable[..., str] | None = None,
 ) -> Path | None:
-    """Backward-compatible alias for the URDF/GLB asset dialog."""
+    """Backward-compatible alias for the supported-asset dialog."""
     return choose_asset_file(
         initial_dir,
         root_factory=root_factory,
@@ -154,6 +197,7 @@ def _add_glb(builder: newton.ModelBuilder, args: argparse.Namespace, glb_path: P
 
 def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Model, newton.State, JointControlPanel]:
     is_glb = asset_path.suffix.lower() == ".glb"
+    is_usd = is_usd_asset(asset_path)
     builder = newton.ModelBuilder(
         up_axis=newton.Axis.Z,
         gravity=-9.81 if args.simulate or is_glb else 0.0,
@@ -172,8 +216,27 @@ def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Mode
             collapse_fixed_joints=args.collapse_fixed_joints,
             force_show_colliders=args.show_colliders,
         )
+    elif is_usd:
+        if args.scale != 1.0:
+            raise ValueError(
+                "--scale does not apply to USD assets; author metersPerUnit in the USD stage instead"
+            )
+        try:
+            builder.add_usd(
+                str(asset_path),
+                xform=wp.transform((0.0, 0.0, args.z), wp.quat_identity()),
+                floating=usd_root_floating(args.usd_root_mode),
+                enable_self_collisions=args.self_collisions,
+                collapse_fixed_joints=args.collapse_fixed_joints,
+                force_show_colliders=args.show_colliders,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "USD import requires OpenUSD Python bindings (the 'pxr' module)"
+            ) from exc
     else:
-        raise ValueError(f"Expected a .urdf or .glb file, got: {asset_path}")
+        suffixes = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
+        raise ValueError(f"Expected a supported asset file ({suffixes}), got: {asset_path}")
 
     if args.ground:
         builder.add_ground_plane()
@@ -186,7 +249,7 @@ def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Mode
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     articulation_metadata = (
         ArticulationMetadata(path=None, model_id=None, records_by_pid={}, explicit_dependencies=[])
-        if is_glb
+        if asset_path.suffix.lower() != ".urdf"
         else load_articulation_metadata(asset_path)
     )
     joint_panel = JointControlPanel(
@@ -229,6 +292,7 @@ class AssetBrowser:
         self_collisions_enabled: bool = False,
         collapse_fixed_joints_enabled: bool = False,
         floating_enabled: bool = True,
+        usd_root_mode: str = "authored",
         solver_name: str = "mujoco",
     ) -> None:
         self.urdfs = urdfs
@@ -237,9 +301,14 @@ class AssetBrowser:
         self.self_collisions_enabled = self_collisions_enabled
         self.collapse_fixed_joints_enabled = collapse_fixed_joints_enabled
         self.floating_enabled = floating_enabled
+        if usd_root_mode not in USD_ROOT_MODES:
+            choices = ", ".join(USD_ROOT_MODES)
+            raise ValueError(f"Unknown USD root mode {usd_root_mode!r}; expected one of: {choices}")
+        self.usd_root_mode = usd_root_mode
         self.solver_name = solver_name
         self.requested_index: int | None = None
         self.file_error: str | None = None
+        self.load_warning: str | None = None
         self.last_copied_model_id: str | None = None
         self.copy_error_model_id: str | None = None
         self.last_panel_scroll_y: float | None = None
@@ -262,14 +331,17 @@ class AssetBrowser:
         }
 
     def request_asset(self, asset_path: Path) -> int:
-        """Add a selected URDF/GLB to the browser, if needed, and request it."""
+        """Add a selected supported asset to the browser, if needed, and request it."""
         candidate = Path(asset_path).expanduser()
         if candidate.suffix.lower() not in SUPPORTED_ASSET_SUFFIXES:
-            raise ValueError(f"Expected a .urdf or .glb file, got: {candidate}")
+            suffixes = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
+            raise ValueError(f"Expected a supported asset file ({suffixes}), got: {candidate}")
 
         candidate = candidate.resolve(strict=True)
         if not candidate.is_file():
             raise ValueError(f"Expected a file, got: {candidate}")
+        if candidate.suffix.lower() == ".urdf":
+            validate_urdf_xml(candidate)
 
         index = next(
             (
@@ -293,7 +365,7 @@ class AssetBrowser:
         return self.request_asset(urdf_path)
 
     def open_asset_dialog(self) -> None:
-        """Ask the user for a URDF/GLB path and queue it for loading."""
+        """Ask the user for a supported asset path and queue it for loading."""
         self.file_error = None
         try:
             selected = self.file_picker(self.urdfs[self.current_index].parent)
@@ -345,6 +417,18 @@ class AssetBrowser:
         self.requested_index = self.current_index
         return True
 
+    def set_usd_root_mode(self, root_mode: str) -> bool:
+        """Update USD root mobility and queue the current asset for rebuilding."""
+        if root_mode not in USD_ROOT_MODES:
+            choices = ", ".join(USD_ROOT_MODES)
+            raise ValueError(f"Unknown USD root mode {root_mode!r}; expected one of: {choices}")
+        if root_mode == self.usd_root_mode:
+            return False
+
+        self.usd_root_mode = root_mode
+        self.requested_index = self.current_index
+        return True
+
     def render_ui(self, imgui) -> None:
         widen_imgui_scrollbar(imgui)
         self.last_panel_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_panel_scroll_y)
@@ -377,8 +461,10 @@ class AssetBrowser:
             self.open_asset_dialog()
         if self.file_error is not None:
             imgui.text(f"Import failed: {self.file_error}")
+        if self.load_warning is not None:
+            imgui.text(f"Asset warning: {self.load_warning}")
 
-        if current_asset.suffix.lower() == ".urdf":
+        if current_asset.suffix.lower() == ".urdf" or is_usd_asset(current_asset):
             changed, self_collisions_enabled = imgui.checkbox(
                 "Enable Self Collisions##asset_self_collisions",
                 self.self_collisions_enabled,
@@ -393,12 +479,22 @@ class AssetBrowser:
             if changed:
                 self.set_collapse_fixed_joints(collapse_fixed_joints_enabled)
 
+        if current_asset.suffix.lower() == ".urdf":
             changed, floating_enabled = imgui.checkbox(
                 "Floating Base##asset_floating",
                 self.floating_enabled,
             )
             if changed:
                 self.set_floating(floating_enabled)
+        elif is_usd_asset(current_asset):
+            root_mode_index = USD_ROOT_MODES.index(self.usd_root_mode)
+            changed, root_mode_index = imgui.combo(
+                "USD Root Mode##asset_usd_root_mode",
+                root_mode_index,
+                [USD_ROOT_MODE_LABELS[mode] for mode in USD_ROOT_MODES],
+            )
+            if changed:
+                self.set_usd_root_mode(USD_ROOT_MODES[root_mode_index])
         else:
             imgui.text("GLB rigid body: right-drag to test physics")
 
@@ -462,7 +558,7 @@ class AssetViewerRuntime:
         self.loaded: LoadedAsset | None = None
         self.sim_time = 0.0
 
-    def load(self, index: int, show_splash: bool = False) -> None:
+    def load(self, index: int, show_splash: bool = False) -> bool:
         if index < 0 or index >= len(self.urdfs):
             raise IndexError(f"Asset index must be between 0 and {len(self.urdfs) - 1}; got {index}")
 
@@ -471,17 +567,22 @@ class AssetViewerRuntime:
         self.args.self_collisions = self.asset_browser.self_collisions_enabled
         self.args.collapse_fixed_joints = self.asset_browser.collapse_fixed_joints_enabled
         self.args.floating = self.asset_browser.floating_enabled
+        self.args.usd_root_mode = self.asset_browser.usd_root_mode
         self.args.solver = self.asset_browser.solver_name
         if show_splash:
             self._show_splash(f"Loading {label}...")
 
         try:
+            if asset_path.suffix.lower() == ".urdf":
+                validate_urdf_xml(asset_path)
             model, state, joint_panel = build_model(self.args, asset_path)
             solver = None
             state_next = None
             control = None
             contacts = None
-            physics_enabled = self.args.simulate or asset_path.suffix.lower() == ".glb"
+            physics_enabled = asset_path.suffix.lower() == ".glb" or (
+                self.args.simulate and model.body_count > 0
+            )
             if physics_enabled:
                 try:
                     solver = create_solver(model, self.args.solver, self.args.iterations)
@@ -527,8 +628,21 @@ class AssetViewerRuntime:
                 traction_monitor=traction_monitor,
             )
             self.asset_browser.current_index = index
+            self.asset_browser.file_error = None
+            self.asset_browser.load_warning = (
+                "USD contains no rigid bodies; imported geometry is static and cannot be manipulated dynamically."
+                if is_usd_asset(asset_path) and model.body_count == 0
+                else None
+            )
             self.sim_time = 0.0
             self._print_loaded_summary(label, asset_path, model, joint_panel)
+            return True
+        except Exception as exc:
+            message = str(exc) or type(exc).__name__
+            self.asset_browser.file_error = f"Failed to load {label}: {message}"
+            self.asset_browser.load_warning = None
+            print(self.asset_browser.file_error, file=sys.stderr)
+            return False
         finally:
             if show_splash:
                 self._hide_splash()
@@ -581,18 +695,32 @@ class AssetViewerRuntime:
             f"Loaded {model.body_count} bodies, {model.joint_count} joints, "
             f"{model.shape_count} shapes, {model.joint_coord_count} joint coords."
         )
-        if self.args.simulate or asset_path.suffix.lower() == ".glb":
+        if (
+            asset_path.suffix.lower() == ".glb"
+            or self.args.simulate
+            and model.body_count > 0
+        ):
             print(f"Physics solver: {SOLVER_LABELS[self.args.solver]}")
         if asset_path.suffix.lower() == ".glb":
             print(
                 f"GLB rigid body: mass={self.args.glb_mass:g} kg, "
                 f"collision={self.args.glb_collision}; right-drag to apply picking forces."
             )
-        else:
+        elif asset_path.suffix.lower() == ".urdf":
             print(f"Floating base: {self.args.floating}")
             print(f"Collapse fixed joints: {self.args.collapse_fixed_joints}")
             print(f"Articulation metadata: {describe_metadata(joint_panel.articulation_metadata)}")
             print(f"Interactive controls: {len(joint_panel.controls)} joint controls in the left panel.")
+        else:
+            print(f"USD root mode: {USD_ROOT_MODE_LABELS[self.args.usd_root_mode]}")
+            print(f"Collapse fixed joints: {self.args.collapse_fixed_joints}")
+            print(f"Interactive controls: {len(joint_panel.controls)} joint controls in the left panel.")
+            if model.body_count == 0:
+                print(
+                    "WARNING: USD contains no rigid bodies; imported geometry is static "
+                    "and cannot be manipulated dynamically.",
+                    file=sys.stderr,
+                )
 
 
 def set_double_sided_rendering(viewer: newton.viewer.ViewerGL, enabled: bool) -> None:
@@ -617,6 +745,7 @@ def run_viewer(
     urdfs: list[Path],
     initial_index: int,
 ) -> None:
+    configure_warp_cpu_fallback()
     viewer = newton.viewer.ViewerGL(
         width=args.width,
         height=args.height,
@@ -631,6 +760,7 @@ def run_viewer(
         self_collisions_enabled=args.self_collisions,
         collapse_fixed_joints_enabled=args.collapse_fixed_joints,
         floating_enabled=args.floating,
+        usd_root_mode=args.usd_root_mode,
         solver_name=args.solver,
     )
     camera_controls = CameraControlPanel(
@@ -664,7 +794,9 @@ def run_viewer(
         viewer.register_ui_callback(camera_controls.render_ui, position="rendering")
         viewer.register_ui_callback(render_double_sided_option, position="rendering")
 
-    runtime.load(initial_index)
+    if not runtime.load(initial_index):
+        viewer.close()
+        return
 
     frame_dt = 1.0 / args.fps
     sim_dt = frame_dt / args.substeps
@@ -720,13 +852,13 @@ def run_viewer(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inspect URDF and GLB assets with Newton.")
+    parser = argparse.ArgumentParser(description="Inspect URDF, USD, and GLB assets with Newton.")
     parser.add_argument(
         "source",
         nargs="?",
         type=Path,
         default=DEFAULT_SOURCE,
-        help="Asset directory, one .urdf file, or one .glb file.",
+        help="Asset directory or one supported URDF, USD, or GLB file.",
     )
     parser.add_argument("--list", action="store_true", help="List matching asset files and exit.")
     parser.add_argument(
@@ -736,7 +868,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Limit discovery to a category folder, e.g. microwave or scissors. Repeat for multiple categories.",
     )
     parser.add_argument("--index", type=int, default=0, help="Asset index to open when source contains many models.")
-    parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument("--scale", type=float, default=1.0, help="Scale for URDF and GLB imports.")
     parser.add_argument(
         "--glb-mass",
         type=float,
@@ -782,6 +914,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Import a URDF with a free-floating root body (enabled by default).",
     )
     parser.add_argument(
+        "--usd-root-mode",
+        choices=USD_ROOT_MODES,
+        default="authored",
+        help="USD root mobility: preserve authored/default behavior, force floating, or force fixed.",
+    )
+    parser.add_argument(
         "--double-sided",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -809,7 +947,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--simulate",
         action="store_true",
-        help="Run Newton dynamics for URDF assets. GLB rigid bodies are always physics-enabled for dragging.",
+        help="Run Newton dynamics for URDF and USD assets. GLB rigid bodies are always physics-enabled.",
     )
     parser.add_argument(
         "--start-running",
