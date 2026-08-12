@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Newton 资产试验结果</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#">
+        <span class="brand-mark" aria-hidden="true">N</span>
+        <span>
+          <strong>Newton 资产试验</strong>
+          <small>MuJoCo 物理观察结果</small>
+        </span>
+      </a>
+      <div class="connection">
+        <span class="connection-dot" aria-hidden="true"></span>
+        只读浏览
+      </div>
+    </header>
+
+    <main id="app" class="page-shell" aria-live="polite">
+      <section class="empty-state">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1>正在读取试验结果</h1>
+        <p>页面会自动载入服务器磁盘上的最新索引。</p>
+      </section>
+    </main>
+
+    <footer>
+      页面仅展示结果，不会启动、修改或删除试验。
+    </footer>
+  </body>
+</html>

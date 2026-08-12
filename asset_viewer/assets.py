@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,38 @@ class ArticulationMetadata:
     model_id: str | None
     records_by_pid: dict[int, ArticulationRecord]
     explicit_dependencies: list[tuple[str, Any]]
+
+
+@dataclass(frozen=True)
+class AssetTreeFile:
+    """One selectable asset leaf in the on-screen directory tree."""
+
+    asset_index: int
+    path: Path
+
+    @property
+    def type_label(self) -> str:
+        return asset_type_label(self.path)
+
+    @property
+    def display_label(self) -> str:
+        return f"[{self.type_label}] {self.path.name}"
+
+
+@dataclass
+class AssetTreeNode:
+    """A real or virtual directory containing supported asset leaves."""
+
+    name: str
+    key: str
+    path: Path | None = None
+    directories: dict[str, "AssetTreeNode"] = field(default_factory=dict)
+    files: list[AssetTreeFile] = field(default_factory=list)
+    asset_indices: set[int] = field(default_factory=set)
+
+    @property
+    def asset_count(self) -> int:
+        return len(self.asset_indices)
 
 
 def find_articulation_json(urdf_path: Path) -> Path | None:
@@ -150,6 +182,113 @@ def describe_asset_path(asset_path: Path) -> str:
     if parent.name:
         return f"{parent.name}/{asset_path.name}"
     return asset_path.name
+
+
+def asset_type_label(asset_path: Path) -> str:
+    """Return the exact supported file-type badge shown by the asset browser."""
+    suffix = asset_path.suffix.lower()
+    if suffix not in SUPPORTED_ASSET_SUFFIXES:
+        supported = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
+        raise ValueError(f"Expected a supported asset file ({supported}), got: {asset_path}")
+    return suffix.removeprefix(".").upper()
+
+
+def asset_path_relative_to_root(asset_path: Path, source_root: Path) -> Path | None:
+    """Return an asset's normalized path below the source root, if contained."""
+    resolved_asset = asset_path.resolve(strict=False)
+    resolved_root = source_root.resolve(strict=False)
+    try:
+        return resolved_asset.relative_to(resolved_root)
+    except ValueError:
+        return None
+
+
+def asset_listing_path(asset_path: Path, source_root: Path) -> str:
+    """Return a relative listing path, or an absolute path for an external asset."""
+    relative = asset_path_relative_to_root(asset_path, source_root)
+    return str(relative) if relative is not None else str(asset_path.resolve(strict=False))
+
+
+def _directory_node(
+    parent: AssetTreeNode,
+    name: str,
+    *,
+    path: Path | None = None,
+) -> AssetTreeNode:
+    lookup_key = name.casefold()
+    node = parent.directories.get(lookup_key)
+    if node is None:
+        node = AssetTreeNode(
+            name=name,
+            key=f"{parent.key}/{lookup_key}",
+            path=path,
+        )
+        parent.directories[lookup_key] = node
+    return node
+
+
+def _add_asset_to_tree(
+    root: AssetTreeNode,
+    directory_parts: tuple[str, ...],
+    asset_index: int,
+    asset_path: Path,
+) -> None:
+    node = root
+    node.asset_indices.add(asset_index)
+    current_path = root.path
+    for part in directory_parts:
+        current_path = current_path / part if current_path is not None else None
+        node = _directory_node(node, part, path=current_path)
+        node.asset_indices.add(asset_index)
+    node.files.append(AssetTreeFile(asset_index=asset_index, path=asset_path))
+
+
+def _external_directory_parts(asset_path: Path) -> tuple[str, ...]:
+    parent = asset_path.resolve(strict=False).parent
+    parts = list(parent.parts)
+    if parts and parent.anchor and parts[0] == parent.anchor:
+        parts[0] = parent.drive or parent.anchor
+    return tuple(part for part in parts if part)
+
+
+def build_asset_tree(assets: list[Path], source_root: Path) -> list[AssetTreeNode]:
+    """Mirror real directory containment for every supported asset.
+
+    Assets below ``source_root`` share one real root node. Files imported from
+    elsewhere share a separate virtual root while preserving their absolute
+    drive and directory hierarchy.
+    """
+    resolved_root = source_root.resolve(strict=False)
+    root_name = resolved_root.name or resolved_root.drive or resolved_root.anchor or str(resolved_root)
+    source_node = AssetTreeNode(
+        name=root_name,
+        key=f"source:{str(resolved_root).casefold()}",
+        path=resolved_root,
+    )
+    imported_node = AssetTreeNode(name="Imported Assets", key="imported-assets")
+
+    for asset_index, asset_path in enumerate(assets):
+        resolved_asset = asset_path.resolve(strict=False)
+        relative = asset_path_relative_to_root(resolved_asset, resolved_root)
+        if relative is not None:
+            _add_asset_to_tree(
+                source_node,
+                relative.parts[:-1],
+                asset_index,
+                resolved_asset,
+            )
+        else:
+            _add_asset_to_tree(
+                imported_node,
+                _external_directory_parts(resolved_asset),
+                asset_index,
+                resolved_asset,
+            )
+
+    roots = [source_node]
+    if imported_node.asset_count:
+        roots.append(imported_node)
+    return roots
 
 
 def copyable_model_id_from_asset(asset_path: Path) -> str:
@@ -313,9 +452,14 @@ def print_urdfs(urdfs: list[Path]) -> None:
         print(f"{index:03d}: {describe_urdf_path(urdf)} -> {urdf}")
 
 
-def print_assets(assets: list[Path]) -> None:
-    for index, asset in enumerate(assets):
-        print(f"{index:03d}: {describe_asset_path(asset)} -> {asset}")
+def print_assets(assets: list[Path], source_root: Path | None = None) -> None:
+    """Print type-tagged asset paths without exposing unstable list indices."""
+    if not assets:
+        return
+    if source_root is None:
+        source_root = assets[0].resolve(strict=False).parent
+    for asset in assets:
+        print(f"[{asset_type_label(asset)}] {asset_listing_path(asset, source_root)}")
 
 
 def describe_metadata(metadata: ArticulationMetadata) -> str:

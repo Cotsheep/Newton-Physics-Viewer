@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "newton-test-runner"
+version = "0.1.0"
+description = "Newton–MuJoCo asset experiment runner and static result browser"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "imageio-ffmpeg==0.6.0",
+    "imgui-bundle==1.92.801",
+    "mujoco==3.10.0",
+    "mujoco-warp==3.10.0.3",
+    "newton==1.4.0",
+    "newton-usd-schemas==0.4.0",
+    "pillow==12.3.0",
+    "pyglet==2.1.15",
+    "trimesh==4.12.2",
+    "usd-core==26.3",
+    "warp-lang==1.15.0",
+]
+
+[project.scripts]
+newton-test = "experiment_runner.controller:main"
+newton-test-control = "experiment_runner.controller:main"
+newton-test-remote = "experiment_runner.cli:main"
+
+[dependency-groups]
+dev = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["asset_viewer", "experiment_runner"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"experiment_runner/web_static" = "experiment_runner/web_static"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/asset_viewer",
+    "/experiment_runner",
+    "/tests",
+    "/view.py",
+    "/run_physics_experiment.py",
+    "/experimentctl.py",
+    "/README.md",
+    "/VIEW_USAGE.md",
+]

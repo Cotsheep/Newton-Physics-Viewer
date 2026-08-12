@@ -2,16 +2,20 @@
 
 `view.py` 用 Newton Viewer 打开 URDF、USD 或 GLB 资产，并提供关节滑条、资产快速切换、自动相机取景、精细视角控制、位置显示、双面渲染和右键拖拽力显示。项目用于查看和检测资产是否适合作为机器人仿真模型，不会自动猜测缺失的质量、关节或碰撞属性。
 
+项目安装、统一中文菜单和当前能力边界参见 [`README.md`](README.md)。远程服务器运行和
+Web UI 的架构、第一阶段范围及后续演进建议参见
+[`docs/远程物理试验运行与结果查看路线.md`](docs/远程物理试验运行与结果查看路线.md)。
+
 ## 代码目录
 
-`view.py` 仍是兼容启动入口，原来的命令不变。目录按职责整理为：
+`view.py` 仍是兼容启动入口。目录按职责整理为：
 
 - `asset_viewer/assets.py`：资产发现、路径描述和 articulation metadata
 - `asset_viewer/controls.py`：关节控制与 ImGui 交互
 - `asset_viewer/camera.py`：资产包围盒、自动取景和精细相机控制
+- `asset_viewer/solvers.py`：求解器选择与构建
 - `asset_viewer/traction.py`：右键拖拽牵引力的计算和显示
 - `asset_viewer/app.py`：Newton 模型构建、Viewer 运行时和命令行
-- `collision_probe.py`：独立的碰撞探针程序
 - `record_collision_comparisons.py`：修复前后碰撞体的筛选、仿真和对比录像
 
 默认读取目录：
@@ -26,7 +30,11 @@ D:\Datasets\Artiverse\dataset_chunks\data
 
 ## 基本用法
 
-查看所有可打开的模型：
+日常使用可以执行 `uv run newton-test`，然后选择“打开桌面资产 Viewer”。下面的命令适合
+需要精确指定参数的进阶使用；它们假定已经进入正确的 Python 环境。使用仓库锁定环境时，
+在每条命令前添加 `uv run`，例如 `uv run python view.py --list`。
+
+查看所有可打开的模型。输出使用文件类型标签和相对路径，不使用易变化的数字索引：
 
 ```powershell
 python view.py --list
@@ -44,10 +52,10 @@ python view.py --category microwave --list
 python view.py
 ```
 
-打开某一类里的指定模型：
+打开某一类目录中的第一个模型：
 
 ```powershell
-python view.py --category microwave --index 12
+python view.py --category microwave
 ```
 
 打开某个具体目录、URDF、USD 或 GLB 文件：
@@ -59,23 +67,11 @@ python view.py D:\path\to\simulation_asset.usda
 python view.py D:\path\to\asset.glb
 ```
 
-## 重要说明
+## 资产定位
 
-`--index` 是当前搜索结果里的编号。
-
-所以：
-
-```powershell
-python view.py --index 12
-```
-
-表示“所有类别排序后的第 12 个模型”。
-
-如果想打开 microwave 的第 12 个模型，需要写：
-
-```powershell
-python view.py --category microwave --index 12
-```
+Viewer 不再公开不稳定的数字资产索引。需要启动指定资产时，直接传入其目录或文件路径；
+运行后也可以在 `Asset Tree` 中按真实目录结构选择文件。Previous/Next 仍可按目录树顺序
+切换相邻资产。
 
 ## Viewer 侧边栏
 
@@ -91,7 +87,11 @@ python view.py --category microwave --index 12
 - `Physics Solver`：选择物理求解器；默认 MuJoCo，切换后自动重新加载并重置当前资产
 - `Reload`：重新加载当前模型
 - `Previous` / `Next`：切换上一个或下一个模型
-- `Asset List`：按 `类别 / 来源 / 模型 ID` 分组列出所有模型，点击即可切换
+- `Asset Tree`：从资产源根目录开始，按磁盘上的真实包含关系递归显示目录；目录后显示其中
+  可加载资产总数，文件使用 `[URDF]`、`[GLB]`、`[USD]`、`[USDA]`、`[USDC]` 或
+  `[USDZ]` 标签。只显示受支持文件及其祖先目录，当前文件所在分支会自动展开
+- `Imported Assets`：在资产源根目录之外导入的文件按其绝对目录结构归入这个独立节点；
+  多个文件会合并共享父目录，不会破坏原始数据集树
 
 切换模型后，程序会按文件类型重新构建 URDF/USD 仿真模型或 GLB 单刚体及当前 UI。
 
@@ -246,9 +246,9 @@ python view.py --simulate --traction-print-hz 30
 默认求解器是 MuJoCo。可通过命令行或 Viewer 的 `Physics Solver` 下拉框切换；在 Viewer 中切换会重新加载当前资产并重置姿态。
 
 ```powershell
-python view.py --category microwave --index 0 --simulate --solver xpbd
-python view.py --category microwave --index 0 --simulate --solver semi-implicit
-python view.py --category microwave --index 0 --simulate --solver featherstone
+python view.py --category microwave --simulate --solver xpbd
+python view.py --category microwave --simulate --solver semi-implicit
+python view.py --category microwave --simulate --solver featherstone
 python view.py D:\path\to\asset.usda --simulate --solver mujoco
 python view.py D:\path\to\asset.glb --solver vbd
 python view.py D:\path\to\asset.glb --solver mujoco
@@ -267,8 +267,8 @@ python view.py D:\path\to\asset.glb --solver mujoco
 对比 URDF/USD fixed joint 折叠前后的仿真：
 
 ```powershell
-python view.py --category microwave --index 0 --simulate --collapse-fixed-joints
-python view.py --category microwave --index 0 --simulate --no-collapse-fixed-joints
+python view.py D:\path\to\microwave.urdf --simulate --collapse-fixed-joints
+python view.py D:\path\to\microwave.urdf --simulate --no-collapse-fixed-joints
 ```
 
 折叠后，fixed joint 会被移除，其 shape、质量和惯量会合并到最近的保留 body；固定到 world 的根 body 会直接成为静态 world geometry。这样通常更快、更稳定，但 body/joint 数量、索引、contact 归属和逐 link 观测结果会改变。
@@ -276,28 +276,14 @@ python view.py --category microwave --index 0 --simulate --no-collapse-fixed-joi
 对比固定根与自由根：
 
 ```powershell
-python view.py --category microwave --index 0 --simulate --no-floating
-python view.py --category microwave --index 0 --simulate --floating --z 0.5
+python view.py D:\path\to\microwave.urdf --simulate --no-floating
+python view.py D:\path\to\microwave.urdf --simulate --floating --z 0.5
 ```
 
 `floating=True` 会为 URDF 根 body 创建一个具有 7 个坐标（位置和四元数）的 FREE joint，使整个资产能受重力、碰撞和拖拽影响。FREE joint 不会被 `collapse_fixed_joints` 折叠；该选项仍会处理 URDF 内部的 fixed joints。
 
 USD 使用独立的 `--usd-root-mode authored|floating|fixed`，不会受到 URDF
 `--floating/--no-floating` 默认值的干扰。
-
-## 碰撞探针
-
-`collision_probe.py` 会创建一个运动学小球，让它沿指定方向穿过资产碰撞体，并显示、
-记录实际 contact。它不依赖视觉 mesh 的外观，因此适合判断碰撞体是否错位、尺寸错误
-或存在空洞。
-
-```powershell
-python collision_probe.py --category microwave --index 0
-python collision_probe.py D:\path\to\model\urdf_w_collider\model.urdf
-```
-
-探针直接使用 `asset_viewer` 包的资产发现和渲染 Interface，不再通过兼容入口
-`view.py` 导入。
 
 ## 碰撞体修复前后对比
 
@@ -326,8 +312,8 @@ python record_collision_comparisons.py `
 ## 常用参数
 
 ```powershell
-python view.py --category scissors --index 3
-python view.py --category microwave --index 12 --simulate
+python view.py --category scissors
+python view.py D:\path\to\microwave.urdf --simulate
 python view.py --category lighter --show-colliders
 python view.py --category piano --scale 0.5
 python view.py --category microwave --initial-motion-state closed
@@ -337,7 +323,7 @@ python view.py --headless --frames 1
 参数说明：
 
 - `--category NAME`：只搜索某个类别，可重复使用
-- `--index N`：打开搜索结果中的第 N 个模型
+- `--list`：按文件类型标签和相对路径列出可加载资产，不添加数字编号
 - `--simulate`：初始化物理模拟，默认暂停在原始姿态
 - `--solver NAME`：选择 `xpbd`、`semi-implicit`、`featherstone`、`vbd` 或 `mujoco`，默认 `mujoco`
 - `--iterations N`：XPBD、VBD 和 MuJoCo 的迭代次数，默认 10
@@ -366,12 +352,14 @@ python view.py --headless --frames 1
 
 ## 常见问题
 
-### 为什么旧的 microwave index 变了？
+### 如何直接打开指定模型？
 
-因为现在默认搜索所有类别。旧的 microwave 索引需要加上类别过滤：
+数字资产索引已经移除，因为目录内容或筛选条件变化后编号并不稳定。请直接传入模型目录
+或具体文件：
 
 ```powershell
-python view.py --category microwave --index 12
+python view.py D:\Datasets\Artiverse\dataset_chunks\data\microwave\3dc200\7e_000
+python view.py D:\path\to\model\urdf_w_collider\model.urdf
 ```
 
 ### 为什么有些面背面看不到？

@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Box" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        bool physics:rigidBodyEnabled = true
+        float physics:mass = 1
+        point3f physics:centerOfMass = (0, 0, 0)
+        float3 physics:diagonalInertia = (0.001666667, 0.001666667, 0.001666667)
+        quatf physics:principalAxes = (1, 0, 0, 0)
+
+        def Cube "Geometry" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcGeomAPI", "MaterialBindingAPI"]
+        )
+        {
+            bool physics:collisionEnabled = true
+            color3f[] primvars:displayColor = [(0.2, 0.65, 0.82)]
+            rel material:binding:physics = </World/PhysicsMaterial>
+            double size = 0.1
+            uniform int mjc:condim = 3
+            uniform double[] mjc:solref = [0.02, 1.0]
+            uniform double[] mjc:solimp = [0.9, 0.95, 0.001, 0.5, 2.0]
+        }
+    }
+
+    def Material "PhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 0.5
+        uniform double mjc:rollingfriction = 0.01
+    }
+}

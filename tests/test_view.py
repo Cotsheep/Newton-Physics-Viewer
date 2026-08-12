@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -59,9 +61,16 @@ MALFORMED_URDF = """\
 
 class CopyableModelIdTests(unittest.TestCase):
     def test_urdf_model_id_uses_spaces_between_path_components(self) -> None:
-        urdf_path = Path(
-            r"D:\Datasets\Artiverse\dataset_chunks\data\microwave\3dc200\7e_000"
-            r"\urdf_w_collider\7e_000.urdf"
+        urdf_path = (
+            Path("Datasets")
+            / "Artiverse"
+            / "dataset_chunks"
+            / "data"
+            / "microwave"
+            / "3dc200"
+            / "7e_000"
+            / "urdf_w_collider"
+            / "7e_000.urdf"
         )
 
         self.assertEqual(view.copyable_model_id_from_urdf(urdf_path), "microwave 3dc200 7e_000")
@@ -234,6 +243,157 @@ class AssetDiscoveryTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, r"broken\.urdf.*line 4"):
                 view.find_assets(urdf_path)
+
+
+class AssetTreeTests(unittest.TestCase):
+    def test_tree_mirrors_real_directory_containment_and_exact_file_types(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_root = Path(temp_dir) / "data"
+            model_root = source_root / "microwave" / "3dc200" / "7e_000"
+            collider_root = model_root / "urdf_w_collider"
+            assets = [
+                model_root / "7e_000.segmented.glb",
+                collider_root / "7e_000.urdf",
+                collider_root / "glbs" / "1_base.glb",
+                collider_root / "asset.usda",
+                collider_root / "asset.usdc",
+                collider_root / "asset.usdz",
+            ]
+
+            roots = view.build_asset_tree(assets, source_root)
+
+            self.assertEqual(len(roots), 1)
+            source = roots[0]
+            self.assertEqual(source.name, "data")
+            self.assertEqual(source.asset_count, len(assets))
+            model = (
+                source.directories["microwave"]
+                .directories["3dc200"]
+                .directories["7e_000"]
+            )
+            self.assertEqual(model.files[0].display_label, "[GLB] 7e_000.segmented.glb")
+            collider = model.directories["urdf_w_collider"]
+            self.assertEqual(
+                sorted(entry.display_label for entry in collider.files),
+                [
+                    "[URDF] 7e_000.urdf",
+                    "[USDA] asset.usda",
+                    "[USDC] asset.usdc",
+                    "[USDZ] asset.usdz",
+                ],
+            )
+            self.assertEqual(
+                collider.directories["glbs"].files[0].display_label,
+                "[GLB] 1_base.glb",
+            )
+
+    def test_external_assets_share_an_imported_absolute_directory_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "data"
+            source_asset = source_root / "inside.urdf"
+            shared_external = root / "external" / "shared"
+            external_assets = [
+                shared_external / "first.usd",
+                shared_external / "second.glb",
+            ]
+
+            roots = view.build_asset_tree(
+                [source_asset, *external_assets],
+                source_root,
+            )
+
+            self.assertEqual([node.name for node in roots], ["data", "Imported Assets"])
+            imported = roots[1]
+            self.assertEqual(imported.asset_count, 2)
+
+            def descendants(node):
+                yield node
+                for child in node.directories.values():
+                    yield from descendants(child)
+
+            shared = next(node for node in descendants(imported) if node.name == "shared")
+            self.assertEqual(shared.asset_count, 2)
+            self.assertEqual(
+                sorted(entry.display_label for entry in shared.files),
+                ["[GLB] second.glb", "[USD] first.usd"],
+            )
+
+    def test_asset_tree_renders_directories_before_files_without_numeric_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_root = Path(temp_dir) / "data"
+            assets = [
+                source_root / "z_file.glb",
+                source_root / "a_dir" / "nested.urdf",
+                source_root / "a_file.usda",
+            ]
+            browser = view.AssetBrowser(assets, 1, source_root=source_root)
+            calls: list[tuple[str, str]] = []
+
+            class FakeImgui:
+                class Cond_:
+                    always = "always"
+                    appearing = "appearing"
+
+                def set_next_item_open(self, _opened, _condition) -> None:
+                    pass
+
+                def tree_node(self, label):
+                    calls.append(("directory", label.split("##", 1)[0]))
+                    return True
+
+                def is_item_hovered(self):
+                    return False
+
+                def set_tooltip(self, _text) -> None:
+                    pass
+
+                def selectable(self, label, _selected):
+                    calls.append(("file", label.split("##", 1)[0]))
+                    return False, False
+
+                def tree_pop(self) -> None:
+                    pass
+
+            browser._render_asset_tree(FakeImgui())
+
+            visible = [call for call in calls if call[1] != "Asset Tree"]
+            self.assertEqual(
+                visible,
+                [
+                    ("directory", "data (3)"),
+                    ("directory", "a_dir (1)"),
+                    ("file", "[URDF] nested.urdf"),
+                    ("file", "[USDA] a_file.usda"),
+                    ("file", "[GLB] z_file.glb"),
+                ],
+            )
+            self.assertFalse(any(label[:1].isdigit() for _kind, label in visible))
+
+    def test_list_output_uses_type_tags_and_relative_paths_without_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_root = Path(temp_dir) / "data"
+            assets = [
+                source_root / "microwave" / "asset.urdf",
+                source_root / "microwave" / "mesh.glb",
+            ]
+            output = StringIO()
+
+            with redirect_stdout(output):
+                view.print_assets(assets, source_root)
+
+            self.assertEqual(
+                output.getvalue().splitlines(),
+                [
+                    f"[URDF] {Path('microwave') / 'asset.urdf'}",
+                    f"[GLB] {Path('microwave') / 'mesh.glb'}",
+                ],
+            )
+
+    def test_viewer_command_line_no_longer_accepts_public_asset_indices(self) -> None:
+        self.assertFalse(hasattr(view.parse_args([]), "index"))
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            view.parse_args(["--index", "1"])
 
 
 class AssetBrowserFileSelectionTests(unittest.TestCase):

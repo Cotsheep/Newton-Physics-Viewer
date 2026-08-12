@@ -19,6 +19,10 @@ from .assets import (
     SUPPORTED_ASSET_SUFFIXES,
     USD_ASSET_SUFFIXES,
     ArticulationMetadata,
+    AssetTreeNode,
+    asset_listing_path,
+    asset_type_label,
+    build_asset_tree,
     copy_text_to_clipboard,
     copyable_model_id_from_asset,
     describe_asset_path,
@@ -294,9 +298,21 @@ class AssetBrowser:
         floating_enabled: bool = True,
         usd_root_mode: str = "authored",
         solver_name: str = "mujoco",
+        source_root: Path | None = None,
     ) -> None:
+        if not urdfs:
+            raise ValueError("AssetBrowser requires at least one asset")
+        if current_index < 0 or current_index >= len(urdfs):
+            raise IndexError(
+                f"Current asset position must be between 0 and {len(urdfs) - 1}; got {current_index}"
+            )
         self.urdfs = urdfs
         self.current_index = current_index
+        self.source_root = (
+            source_root.resolve(strict=False)
+            if source_root is not None
+            else urdfs[0].resolve(strict=False).parent
+        )
         self.file_picker = file_picker or choose_asset_file
         self.self_collisions_enabled = self_collisions_enabled
         self.collapse_fixed_joints_enabled = collapse_fixed_joints_enabled
@@ -312,23 +328,8 @@ class AssetBrowser:
         self.last_copied_model_id: str | None = None
         self.copy_error_model_id: str | None = None
         self.last_panel_scroll_y: float | None = None
-        self.tree = self._build_tree(urdfs)
-
-    def _build_tree(self, urdfs: list[Path]) -> dict[str, dict[str, list[tuple[int, str]]]]:
-        tree: dict[str, dict[str, list[tuple[int, str]]]] = {}
-        for index, urdf_path in enumerate(urdfs):
-            parts = describe_asset_path(urdf_path).split("/")
-            category = parts[0] if parts else "assets"
-            provider = parts[1] if len(parts) > 2 else "models"
-            model_name = parts[-1] if parts else urdf_path.stem
-            tree.setdefault(category, {}).setdefault(provider, []).append((index, model_name))
-        return {
-            category: {
-                provider: sorted(entries, key=lambda item: (item[1].lower(), item[0]))
-                for provider, entries in sorted(providers.items())
-            }
-            for category, providers in sorted(tree.items())
-        }
+        self.tree_roots = build_asset_tree(urdfs, self.source_root)
+        self.reveal_current_asset = True
 
     def request_asset(self, asset_path: Path) -> int:
         """Add a selected supported asset to the browser, if needed, and request it."""
@@ -354,7 +355,7 @@ class AssetBrowser:
         if index is None:
             self.urdfs.append(candidate)
             index = len(self.urdfs) - 1
-            self.tree = self._build_tree(self.urdfs)
+            self.tree_roots = build_asset_tree(self.urdfs, self.source_root)
 
         self.requested_index = index
         self.file_error = None
@@ -429,6 +430,62 @@ class AssetBrowser:
         self.requested_index = self.current_index
         return True
 
+    def set_current_index(self, index: int) -> None:
+        """Record the loaded asset and reveal its directory branch once."""
+        if index < 0 or index >= len(self.urdfs):
+            raise IndexError(
+                f"Current asset position must be between 0 and {len(self.urdfs) - 1}; got {index}"
+            )
+        changed = index != self.current_index
+        self.current_index = index
+        if changed:
+            self.reveal_current_asset = True
+
+    def _render_asset_directory(self, imgui, node: AssetTreeNode) -> None:
+        contains_current = self.current_index in node.asset_indices
+        if self.reveal_current_asset and contains_current:
+            imgui.set_next_item_open(True, imgui.Cond_.always)
+
+        opened = imgui.tree_node(
+            f"{node.name} ({node.asset_count})##asset_directory_{node.key}"
+        )
+        if node.path is not None and imgui.is_item_hovered():
+            imgui.set_tooltip(str(node.path))
+        if not opened:
+            return
+
+        for child in sorted(node.directories.values(), key=lambda item: item.name.casefold()):
+            self._render_asset_directory(imgui, child)
+
+        for entry in sorted(
+            node.files,
+            key=lambda item: (item.path.name.casefold(), str(item.path).casefold()),
+        ):
+            selected = entry.asset_index == self.current_index
+            file_key = str(entry.path.resolve(strict=False)).casefold()
+            clicked, _selected = imgui.selectable(
+                f"{entry.display_label}##asset_file_{file_key}",
+                selected,
+            )
+            if clicked:
+                self.requested_index = entry.asset_index
+
+        imgui.tree_pop()
+
+    def _render_asset_tree(self, imgui) -> None:
+        if self.reveal_current_asset:
+            imgui.set_next_item_open(True, imgui.Cond_.always)
+        else:
+            imgui.set_next_item_open(True, imgui.Cond_.appearing)
+
+        if not imgui.tree_node("Asset Tree"):
+            return
+
+        for root in self.tree_roots:
+            self._render_asset_directory(imgui, root)
+        imgui.tree_pop()
+        self.reveal_current_asset = False
+
     def render_ui(self, imgui) -> None:
         widen_imgui_scrollbar(imgui)
         self.last_panel_scroll_y = assist_imgui_window_wheel_scroll(imgui, self.last_panel_scroll_y)
@@ -436,9 +493,9 @@ class AssetBrowser:
         if not imgui.collapsing_header("Assets"):
             return
 
-        imgui.text(f"Current: {self.current_index:03d} / {len(self.urdfs) - 1:03d}")
         current_asset = self.urdfs[self.current_index]
-        imgui.text(describe_asset_path(current_asset))
+        imgui.text(f"Current: [{asset_type_label(current_asset)}] {current_asset.name}")
+        imgui.text(f"Path: {asset_listing_path(current_asset, self.source_root)}")
         model_id = copyable_model_id_from_asset(current_asset)
         imgui.text(f"Model ID: {model_id}")
 
@@ -463,6 +520,17 @@ class AssetBrowser:
             imgui.text(f"Import failed: {self.file_error}")
         if self.load_warning is not None:
             imgui.text(f"Asset warning: {self.load_warning}")
+
+        if imgui.button("Reload##asset_reload"):
+            self.requested_index = self.current_index
+        imgui.same_line()
+        if imgui.button("Previous##asset_previous"):
+            self.requested_index = (self.current_index - 1) % len(self.urdfs)
+        imgui.same_line()
+        if imgui.button("Next##asset_next"):
+            self.requested_index = (self.current_index + 1) % len(self.urdfs)
+
+        self._render_asset_tree(imgui)
 
         if current_asset.suffix.lower() == ".urdf" or is_usd_asset(current_asset):
             changed, self_collisions_enabled = imgui.checkbox(
@@ -506,32 +574,6 @@ class AssetBrowser:
         )
         if changed:
             self.set_solver(SOLVER_NAMES[solver_index])
-
-        if imgui.button("Reload##asset_reload"):
-            self.requested_index = self.current_index
-        imgui.same_line()
-        if imgui.button("Previous##asset_previous"):
-            self.requested_index = (self.current_index - 1) % len(self.urdfs)
-        imgui.same_line()
-        if imgui.button("Next##asset_next"):
-            self.requested_index = (self.current_index + 1) % len(self.urdfs)
-
-        if imgui.tree_node("Asset List"):
-            for category, providers in self.tree.items():
-                if imgui.tree_node(category):
-                    for provider, entries in providers.items():
-                        if imgui.tree_node(provider):
-                            for index, model_name in entries:
-                                selected = index == self.current_index
-                                clicked, _selected = imgui.selectable(
-                                    f"{index:03d} {model_name}##asset_{index}",
-                                    selected,
-                                )
-                                if clicked:
-                                    self.requested_index = index
-                            imgui.tree_pop()
-                    imgui.tree_pop()
-            imgui.tree_pop()
 
     def consume_request(self) -> int | None:
         requested_index = self.requested_index
@@ -627,7 +669,7 @@ class AssetViewerRuntime:
                 contacts=contacts,
                 traction_monitor=traction_monitor,
             )
-            self.asset_browser.current_index = index
+            self.asset_browser.set_current_index(index)
             self.asset_browser.file_error = None
             self.asset_browser.load_warning = (
                 "USD contains no rigid bodies; imported geometry is static and cannot be manipulated dynamically."
@@ -743,25 +785,31 @@ def viewer_requests_physics_step(viewer: Any) -> bool:
 def run_viewer(
     args: argparse.Namespace,
     urdfs: list[Path],
-    initial_index: int,
 ) -> None:
+    initial_position = 0
+    resolved_source = args.source.expanduser().resolve(strict=False)
+    source_root = resolved_source if resolved_source.is_dir() else resolved_source.parent
     configure_warp_cpu_fallback()
     viewer = newton.viewer.ViewerGL(
         width=args.width,
         height=args.height,
         headless=args.headless,
-        paused=not (args.start_running and (args.simulate or urdfs[initial_index].suffix.lower() == ".glb")),
+        paused=not (
+            args.start_running
+            and (args.simulate or urdfs[initial_position].suffix.lower() == ".glb")
+        ),
     )
 
     double_sided_state = {"enabled": args.double_sided}
     asset_browser = AssetBrowser(
         urdfs,
-        initial_index,
+        initial_position,
         self_collisions_enabled=args.self_collisions,
         collapse_fixed_joints_enabled=args.collapse_fixed_joints,
         floating_enabled=args.floating,
         usd_root_mode=args.usd_root_mode,
         solver_name=args.solver,
+        source_root=source_root,
     )
     camera_controls = CameraControlPanel(
         viewer,
@@ -794,7 +842,7 @@ def run_viewer(
         viewer.register_ui_callback(camera_controls.render_ui, position="rendering")
         viewer.register_ui_callback(render_double_sided_option, position="rendering")
 
-    if not runtime.load(initial_index):
+    if not runtime.load(initial_position):
         viewer.close()
         return
 
@@ -867,7 +915,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Limit discovery to a category folder, e.g. microwave or scissors. Repeat for multiple categories.",
     )
-    parser.add_argument("--index", type=int, default=0, help="Asset index to open when source contains many models.")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale for URDF and GLB imports.")
     parser.add_argument(
         "--glb-mass",
@@ -1043,15 +1090,14 @@ def main() -> None:
     args = parse_args()
     categories = tuple(args.category) if args.category else None
     assets = find_assets(args.source, categories)
+    resolved_source = args.source.expanduser().resolve(strict=False)
+    source_root = resolved_source if resolved_source.is_dir() else resolved_source.parent
 
     if args.list:
-        print_assets(assets)
+        print_assets(assets, source_root)
         return
 
-    if args.index < 0 or args.index >= len(assets):
-        raise IndexError(f"--index must be between 0 and {len(assets) - 1}; got {args.index}")
-
-    run_viewer(args, assets, args.index)
+    run_viewer(args, assets)
 
 
 if __name__ == "__main__":
