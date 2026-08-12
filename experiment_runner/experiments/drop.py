@@ -41,6 +41,24 @@ class DropGeometry:
     initial_bounds: AssetBounds
 
 
+class CpuOnlyViewerGL(newton.viewer.ViewerGL):
+    """Avoid Newton's CUDA-pinned VBO staging buffer on a CPU-only render path."""
+
+    def _build_packed_vbo_arrays(self) -> None:
+        # Newton 1.4.0 builds this pinned host buffer unconditionally, although
+        # log_state() only consumes it when self.device.is_cuda.  Pinned CPU
+        # allocation initializes CUDA, so a CPU smoke viewer must skip it.
+        if self.device.is_cpu:
+            self._packed_groups = []
+            self._capsule_keys = set()
+            self._packed_write_indices = None
+            self._packed_world_xforms = None
+            self._packed_vbo_xforms = None
+            self._packed_vbo_xforms_host = None
+            return
+        super()._build_packed_vbo_arrays()
+
+
 def _viewer_arguments(
     asset_path: Path,
     *,
@@ -120,7 +138,7 @@ def _opengl_identity() -> tuple[str, str]:
 
 
 def _headless_viewer(profile: ExperimentProfile) -> tuple[newton.viewer.ViewerGL, dict[str, str]]:
-    viewer = newton.viewer.ViewerGL(
+    viewer = CpuOnlyViewerGL(
         width=profile.video_width,
         height=profile.video_height,
         headless=True,

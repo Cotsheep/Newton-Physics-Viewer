@@ -21,30 +21,43 @@ def require_git_commit(value: str) -> str:
     return normalized
 
 
-def resolve_git_commit(value: str | None = None, *, source_root: Path | None = None) -> str:
-    """Return an explicit commit or discover the commit containing this source tree."""
-
-    if value is not None:
-        return require_git_commit(value)
-    root = source_root or Path(__file__).resolve().parent.parent
+def _discover_git_commit(source_root: Path) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            ["git", "-C", str(source_root), "rev-parse", "--verify", "HEAD"],
             check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(
-            "Cannot determine the deployed Git commit; pass --git-commit with the exact deployed commit"
-        ) from exc
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     if completed.returncode != 0:
+        return None
+    try:
+        return require_git_commit(completed.stdout.strip())
+    except ValueError:
+        return None
+
+
+def resolve_git_commit(value: str | None = None, *, source_root: Path | None = None) -> str:
+    """Return an explicit commit and reject disagreement with a readable source repository."""
+
+    root = source_root or Path(__file__).resolve().parent.parent
+    discovered = _discover_git_commit(root)
+    if value is not None:
+        explicit = require_git_commit(value)
+        if discovered is not None and explicit != discovered:
+            raise ValueError(
+                "Explicit Git commit does not match the commit in the deployed source repository"
+            )
+        return explicit
+    if discovered is None:
         raise ValueError(
             "Cannot determine the deployed Git commit; pass --git-commit with the exact deployed commit"
         )
-    return require_git_commit(completed.stdout.strip())
+    return discovered
 
 
 def collect_runtime_environment(profile: dict[str, Any]) -> dict[str, Any]:

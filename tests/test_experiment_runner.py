@@ -35,6 +35,7 @@ from experiment_runner.controller import (
     run_local_smoke,
 )
 from experiment_runner.profiles import get_profile
+from experiment_runner.provenance import resolve_git_commit
 from experiment_runner.results import (
     build_result_index,
     create_run_scaffold,
@@ -250,6 +251,33 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertFalse(arguments.ground)
 
+    def test_cpu_viewer_skips_cuda_pinned_buffers(self) -> None:
+        from experiment_runner.experiments.drop import CpuOnlyViewerGL
+
+        viewer = object.__new__(CpuOnlyViewerGL)
+        viewer.device = mock.Mock(is_cpu=True)
+        viewer._packed_groups = ["stale"]
+        viewer._capsule_keys = {"stale"}
+        viewer._packed_write_indices = object()
+        viewer._packed_world_xforms = object()
+        viewer._packed_vbo_xforms = object()
+        viewer._packed_vbo_xforms_host = object()
+        viewer._build_packed_vbo_arrays()
+        self.assertEqual(viewer._packed_groups, [])
+        self.assertEqual(viewer._capsule_keys, set())
+        self.assertIsNone(viewer._packed_write_indices)
+        self.assertIsNone(viewer._packed_world_xforms)
+        self.assertIsNone(viewer._packed_vbo_xforms)
+        self.assertIsNone(viewer._packed_vbo_xforms_host)
+
+
+class ProvenanceTests(unittest.TestCase):
+    def test_explicit_commit_must_match_readable_source_repository(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="a" * 40 + "\n", stderr="")
+        with mock.patch("experiment_runner.provenance.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                resolve_git_commit("b" * 40, source_root=Path("source"))
+
 
 class AssetIdentityTests(unittest.TestCase):
     def test_normalizes_separators_and_unicode(self) -> None:
@@ -301,7 +329,12 @@ class AssetAcceptanceTests(unittest.TestCase):
             root.initialize()
             identity = "kitchen/box-01"
             source = self._write_package(root, identity, READY_USDA)
-            report = accept_asset(root, identity, git_commit="a" * 40, enforce_readonly=False)
+            report = accept_asset(
+                root,
+                identity,
+                git_commit=resolve_git_commit(),
+                enforce_readonly=False,
+            )
             self.assertEqual(report["status"], "accepted")
             self.assertFalse(source.exists())
             destination = root.location("assets").joinpath(
