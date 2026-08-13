@@ -194,6 +194,34 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(smoke.use_mujoco_cpu)
         self.assertTrue(smoke.use_mujoco_contacts)
 
+    def test_profiles_command_distinguishes_runnable_smoke_from_reserved_formal_profile(self) -> None:
+        from experiment_runner.cli import main
+
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            return_code = main(["profiles"])
+
+        self.assertEqual(return_code, 0)
+        profiles = json.loads(output.getvalue())
+        formal = profiles["mujoco-native-dt1ms-v1"]
+        smoke = profiles["mujoco-cpu-wsl-smoke-v1"]
+
+        self.assertTrue(formal["authoritative"])
+        self.assertEqual(formal["availability"]["status"], "reserved_not_runnable")
+        self.assertFalse(formal["availability"]["runnable"])
+        self.assertIsNone(formal["availability"]["entrypoint"])
+
+        self.assertFalse(smoke["authoritative"])
+        self.assertEqual(smoke["availability"]["status"], "development_smoke_only")
+        self.assertTrue(smoke["availability"]["runnable"])
+        self.assertEqual(smoke["availability"]["entrypoint"], "smoke-drop")
+
+    def test_profiles_help_describes_registration_and_availability_not_approval(self) -> None:
+        from experiment_runner.cli import build_parser
+
+        help_text = build_parser().format_help()
+        self.assertIn("registered profiles and execution availability", help_text)
+        self.assertNotIn("approved experiment profiles", help_text)
+
     def test_smoke_preview_is_resized_to_profile_dimensions(self) -> None:
         frame = np.zeros((360, 640, 3), dtype=np.uint8)
         encoded = jpeg_bytes(frame, size=(320, 180))

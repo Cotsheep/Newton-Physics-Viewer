@@ -14,7 +14,7 @@ from .config import (
     resolve_data_root,
     save_server_config,
 )
-from .profiles import PROFILES
+from .profiles import describe_profiles
 from .results import build_result_index
 from .storage import DataRoot
 from .web import install_static_site, serve_results
@@ -133,7 +133,7 @@ def _command_serve_results(args: argparse.Namespace) -> int:
 def _command_profiles(_args: argparse.Namespace) -> int:
     print(
         json.dumps(
-            {name: profile.expanded() for name, profile in PROFILES.items()},
+            describe_profiles(),
             ensure_ascii=False,
             indent=2,
         )
@@ -235,7 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_root_arguments(serve)
     serve.set_defaults(handler=_command_serve_results)
 
-    profiles = subparsers.add_parser("profiles", help="Show approved experiment profiles.")
+    profiles = subparsers.add_parser(
+        "profiles",
+        help="Show registered profiles and execution availability.",
+    )
     profiles.set_defaults(handler=_command_profiles)
 
     smoke = subparsers.add_parser(

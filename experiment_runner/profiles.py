@@ -76,6 +76,42 @@ _PROFILE_VALUES = {
 PROFILES = MappingProxyType(_PROFILE_VALUES)
 
 
+_PROFILE_AVAILABILITY = MappingProxyType(
+    {
+        "mujoco-native-dt1ms-v1": {
+            "status": "reserved_not_runnable",
+            "runnable": False,
+            "entrypoint": None,
+            "message": (
+                "Registered for future formal GPU validation; no formal experiment "
+                "execution entry point is currently available."
+            ),
+        },
+        "mujoco-cpu-wsl-smoke-v1": {
+            "status": "development_smoke_only",
+            "runnable": True,
+            "entrypoint": "smoke-drop",
+            "message": (
+                "Available only for one non-authoritative MuJoCo CPU medium-height "
+                "drop smoke case."
+            ),
+        },
+    }
+)
+
+
+def describe_profiles() -> dict[str, dict[str, Any]]:
+    """Describe registered profiles without implying every profile is runnable."""
+
+    return {
+        name: {
+            **profile.expanded(),
+            "availability": dict(_PROFILE_AVAILABILITY[name]),
+        }
+        for name, profile in PROFILES.items()
+    }
+
+
 def get_profile(name: str) -> ExperimentProfile:
     try:
         return PROFILES[name]
