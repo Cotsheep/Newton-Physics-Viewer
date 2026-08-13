@@ -13,7 +13,13 @@ const STATUS_LABELS = {
 };
 const TEMPLATE_LABELS = {
   drop: "摔落试验",
-  slope_friction: "斜坡摩擦试验",
+  slope_friction: "坡度试验",
+};
+
+const DEVELOPMENT_OUTCOME_LABELS = {
+  moved: "观察：发生沿坡移动",
+  stayed_near_start: "观察：保持在起点附近",
+  inconclusive: "观察：结果不明确",
 };
 
 let resultIndex = null;
@@ -174,6 +180,14 @@ function caseCard(asset, run, testCase) {
   );
   const tags = element("div", "tag-row");
   tags.append(statusBadge(testCase.status));
+  if (testCase.authoritative === false) {
+    tags.append(element("span", "tag", "非正式开发冒烟"));
+  }
+  if (DEVELOPMENT_OUTCOME_LABELS[testCase.development_outcome]) {
+    tags.append(
+      element("span", "tag", DEVELOPMENT_OUTCOME_LABELS[testCase.development_outcome]),
+    );
+  }
   if (typeof testCase.duration_seconds === "number") {
     tags.append(element("span", "tag", `${testCase.duration_seconds.toFixed(1)} 秒`));
   }

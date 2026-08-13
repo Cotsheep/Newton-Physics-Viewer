@@ -34,7 +34,7 @@ from experiment_runner.controller import (
     open_remote_results,
     run_local_smoke,
 )
-from experiment_runner.profiles import get_profile
+from experiment_runner.profiles import describe_profiles, get_profile
 from experiment_runner.provenance import resolve_git_commit
 from experiment_runner.results import (
     build_result_index,
@@ -208,12 +208,20 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(formal["authoritative"])
         self.assertEqual(formal["availability"]["status"], "reserved_not_runnable")
         self.assertFalse(formal["availability"]["runnable"])
-        self.assertIsNone(formal["availability"]["entrypoint"])
+        self.assertEqual(formal["availability"]["entrypoints"], [])
 
         self.assertFalse(smoke["authoritative"])
         self.assertEqual(smoke["availability"]["status"], "development_smoke_only")
         self.assertTrue(smoke["availability"]["runnable"])
-        self.assertEqual(smoke["availability"]["entrypoint"], "smoke-drop")
+        self.assertEqual(
+            smoke["availability"]["entrypoints"],
+            ["smoke-drop", "smoke-slope"],
+        )
+        smoke["availability"]["entrypoints"].append("mutated-by-caller")
+        self.assertEqual(
+            describe_profiles()["mujoco-cpu-wsl-smoke-v1"]["availability"]["entrypoints"],
+            ["smoke-drop", "smoke-slope"],
+        )
 
     def test_profiles_help_describes_registration_and_availability_not_approval(self) -> None:
         from experiment_runner.cli import build_parser
@@ -631,7 +639,7 @@ class ControllerTests(unittest.TestCase):
     def test_first_run_setup_can_be_skipped_and_menu_remains_available(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "controller.toml"
-            answers = iter(["", "", "", "", "", "", "7", "0"])
+            answers = iter(["", "", "", "", "", "", "8", "0"])
             with mock.patch("builtins.input", side_effect=lambda _prompt="": next(answers)):
                 with mock.patch("builtins.print") as output:
                     return_code = _interactive(config_path=config_path)

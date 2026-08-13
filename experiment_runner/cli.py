@@ -155,6 +155,20 @@ def _command_smoke_drop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_smoke_slope(args: argparse.Namespace) -> int:
+    from .smoke import run_cpu_smoke_slope
+
+    result = run_cpu_smoke_slope(
+        _data_root(args),
+        asset_identity=args.identity,
+        asset_version=args.version,
+        git_commit=args.git_commit,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("注意：这是固定 25°、CPU、单案例的非正式冒烟观察，不是正式摩擦结论。")
+    return 0
+
+
 def _add_data_root_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--data-root",
@@ -250,6 +264,24 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--git-commit", default=None)
     _add_data_root_arguments(smoke)
     smoke.set_defaults(handler=_command_smoke_drop)
+
+    slope_smoke = subparsers.add_parser(
+        "smoke-slope",
+        help=(
+            "Run one fixed 25-degree MuJoCo CPU slope smoke case "
+            "(non-authoritative, single-case development smoke)."
+        ),
+        description=(
+            "Run fixed 25-degree CPU slope smoke. This non-authoritative "
+            "single-case development check does not produce a formal friction "
+            "conclusion."
+        ),
+    )
+    slope_smoke.add_argument("identity", help="Accepted slope-ready asset identity.")
+    slope_smoke.add_argument("version", help="Complete immutable asset SHA-256 version.")
+    slope_smoke.add_argument("--git-commit", default=None)
+    _add_data_root_arguments(slope_smoke)
+    slope_smoke.set_defaults(handler=_command_smoke_slope)
     return parser
 
 

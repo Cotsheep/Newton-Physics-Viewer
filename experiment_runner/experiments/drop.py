@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import newton
-import newton.viewer
+import newton.usd
 import numpy as np
 import warp as wp
 
@@ -17,9 +16,16 @@ from asset_viewer.app import (
 )
 from asset_viewer.camera import AssetBounds, compute_asset_bounds, frame_camera_on_bounds
 
-from ..cpu_safety import require_software_opengl_renderer
 from ..profiles import ExperimentProfile
-from ..video import H264VideoWriter, atomic_write_jpeg
+from ..video import atomic_write_jpeg
+from .recording import (
+    CpuOnlyViewerGL,
+    _headless_viewer,
+    _render_frame,
+    configure_warp_cpu_only,
+    record_simulation_video,
+    recording_frame_counts,
+)
 
 
 @dataclass
@@ -39,24 +45,6 @@ class DropGeometry:
     effective_length: float
     clearance: float
     initial_bounds: AssetBounds
-
-
-class CpuOnlyViewerGL(newton.viewer.ViewerGL):
-    """Avoid Newton's CUDA-pinned VBO staging buffer on a CPU-only render path."""
-
-    def _build_packed_vbo_arrays(self) -> None:
-        # Newton 1.4.0 builds this pinned host buffer unconditionally, although
-        # log_state() only consumes it when self.device.is_cuda.  Pinned CPU
-        # allocation initializes CUDA, so a CPU smoke viewer must skip it.
-        if self.device.is_cpu:
-            self._packed_groups = []
-            self._capsule_keys = set()
-            self._packed_write_indices = None
-            self._packed_world_xforms = None
-            self._packed_vbo_xforms = None
-            self._packed_vbo_xforms_host = None
-            return
-        super()._build_packed_vbo_arrays()
 
 
 def _viewer_arguments(
@@ -98,65 +86,10 @@ def _viewer_arguments(
     return parse_view_args(arguments)
 
 
-def configure_warp_cpu_only() -> None:
-    """Override Warp's CUDA-first default before creating any model arrays."""
+def mujoco_usd_schema_resolvers() -> list[Any]:
+    """Resolve generic Newton fields and the asset's authored ``mjc:*`` fields."""
 
-    wp.set_device("cpu")
-    device = wp.get_device()
-    if not bool(getattr(device, "is_cpu", False)):
-        raise RuntimeError("CPU smoke could not lock Warp to the CPU device")
-
-
-def recording_frame_counts(
-    *,
-    duration_seconds: float,
-    initial_hold_seconds: float,
-    fps: int,
-) -> tuple[int, int, int]:
-    """Return total, hold, and simulated frames without consuming physics time for the hold."""
-
-    if duration_seconds <= 0.0 or not math.isfinite(duration_seconds):
-        raise ValueError("duration_seconds must be finite and greater than zero")
-    if initial_hold_seconds < 0.0 or not math.isfinite(initial_hold_seconds):
-        raise ValueError("initial_hold_seconds must be finite and non-negative")
-    if fps <= 0:
-        raise ValueError("fps must be greater than zero")
-    simulation_frames = round(duration_seconds * fps)
-    hold_frames = round(initial_hold_seconds * fps)
-    return hold_frames + simulation_frames, hold_frames, simulation_frames
-
-
-def _opengl_identity() -> tuple[str, str]:
-    from OpenGL import GL
-
-    def decoded(value: str | bytes | None) -> str:
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return value or "unknown"
-
-    return decoded(GL.glGetString(GL.GL_RENDERER)), decoded(GL.glGetString(GL.GL_VENDOR))
-
-
-def _headless_viewer(profile: ExperimentProfile) -> tuple[newton.viewer.ViewerGL, dict[str, str]]:
-    viewer = CpuOnlyViewerGL(
-        width=profile.video_width,
-        height=profile.video_height,
-        headless=True,
-        paused=True,
-    )
-    try:
-        renderer, vendor = _opengl_identity()
-        software_required = os.environ.get("NEWTON_TEST_REQUIRE_SOFTWARE_OPENGL") == "1"
-        if software_required:
-            renderer = require_software_opengl_renderer(renderer)
-        return viewer, {
-            "device": "software-cpu" if software_required else "system-opengl",
-            "renderer": renderer,
-            "vendor": vendor,
-        }
-    except Exception:
-        viewer.close()
-        raise
+    return [newton.usd.SchemaResolverNewton(), newton.usd.SchemaResolverMjc()]
 
 
 def measure_drop_geometry(
@@ -169,7 +102,11 @@ def measure_drop_geometry(
     if clearance_scale <= 0.0 or not math.isfinite(clearance_scale):
         raise ValueError("clearance_scale must be finite and greater than zero")
     args = _viewer_arguments(asset_path, z_offset=0.0, profile=profile)
-    model, state, _joint_panel = build_model(args, asset_path)
+    model, state, _joint_panel = build_model(
+        args,
+        asset_path,
+        usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+    )
     bounds = compute_asset_bounds(model, state)
     characteristic_length = bounds.max_extent
     if not math.isfinite(characteristic_length) or characteristic_length <= 0.0:
@@ -196,7 +133,11 @@ def create_drop_scene(
         raise ValueError("clearance must be finite and greater than zero")
     z_offset = clearance - float(measured_bounds.minimum[2])
     args = _viewer_arguments(asset_path, z_offset=z_offset, profile=profile)
-    model, state, _joint_panel = build_model(args, asset_path)
+    model, state, _joint_panel = build_model(
+        args,
+        asset_path,
+        usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+    )
     solver = newton.solvers.SolverMuJoCo(
         model,
         iterations=profile.iterations,
@@ -228,13 +169,6 @@ def step_drop_scene(scene: DropScene, profile: ExperimentProfile) -> None:
     scene.sim_time += profile.physics_dt
 
 
-def _render_frame(viewer: newton.viewer.ViewerGL, scene: DropScene) -> np.ndarray:
-    viewer.begin_frame(scene.sim_time)
-    viewer.log_state(scene.state)
-    viewer.end_frame()
-    return viewer.get_frame(render_ui=False).numpy()
-
-
 def _camera_bounds(bounds: AssetBounds) -> AssetBounds:
     minimum = bounds.minimum.copy()
     maximum = bounds.maximum.copy()
@@ -260,7 +194,11 @@ def render_asset_cover(
         profile=profile,
         include_ground=False,
     )
-    model, state, _joint_panel = build_model(args, asset_path)
+    model, state, _joint_panel = build_model(
+        args,
+        asset_path,
+        usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+    )
     bounds = compute_asset_bounds(model, state)
     viewer, rendering = _headless_viewer(profile)
     try:
@@ -286,63 +224,16 @@ def record_drop_case(
     duration_seconds: float,
     initial_hold_seconds: float = 0.5,
 ) -> dict[str, Any]:
-    total_frames, hold_frames, simulation_frames = recording_frame_counts(
+    initial_bounds = compute_asset_bounds(scene.model, scene.state)
+    recording = record_simulation_video(
+        scene,
+        profile=profile,
+        output_directory=output_directory,
         duration_seconds=duration_seconds,
         initial_hold_seconds=initial_hold_seconds,
-        fps=profile.video_fps,
+        camera_bounds=_camera_bounds(initial_bounds),
+        step_scene=step_drop_scene,
     )
-    output_directory.mkdir(parents=True, exist_ok=True)
-    initial_bounds = compute_asset_bounds(scene.model, scene.state)
-    configure_warp_cpu_only()
-    viewer, rendering = _headless_viewer(profile)
-    viewer.set_model(scene.model)
-    viewer.set_camera(wp.vec3(1.0, -1.0, 1.0), pitch=-22.0, yaw=42.0)
-    frame_camera_on_bounds(viewer.camera, _camera_bounds(initial_bounds), padding=1.45)
-    viewer.show_visual = True
-    viewer.show_collision = False
-
-    preview_every = max(1, round(profile.preview_interval_seconds * profile.video_fps))
-    video_path = output_directory / "video.mp4"
-
-    try:
-        # Compile shaders and upload meshes before opening the output video.
-        poster = _render_frame(viewer, scene)
-        atomic_write_jpeg(output_directory / "poster.jpg", poster)
-        atomic_write_jpeg(
-            output_directory.parent.parent / "preview.jpg",
-            poster,
-            quality=82,
-            size=(profile.preview_width, profile.preview_height),
-        )
-        with H264VideoWriter(
-            video_path,
-            width=profile.video_width,
-            height=profile.video_height,
-            fps=profile.video_fps,
-        ) as writer:
-            for frame_index in range(total_frames):
-                if frame_index >= hold_frames:
-                    for _ in range(profile.physics_steps_per_video_frame):
-                        step_drop_scene(scene, profile)
-                frame = _render_frame(viewer, scene)
-                writer.write(frame)
-                if frame_index % preview_every == 0:
-                    atomic_write_jpeg(
-                        output_directory.parent.parent / "preview.jpg",
-                        frame,
-                        quality=82,
-                        size=(profile.preview_width, profile.preview_height),
-                    )
-        final_frame = _render_frame(viewer, scene)
-        atomic_write_jpeg(output_directory / "final.jpg", final_frame)
-        atomic_write_jpeg(
-            output_directory.parent.parent / "preview.jpg",
-            final_frame,
-            quality=82,
-            size=(profile.preview_width, profile.preview_height),
-        )
-    finally:
-        viewer.close()
 
     final_bounds = compute_asset_bounds(scene.model, scene.state)
     body_q = np.asarray(scene.state.body_q.numpy(), dtype=np.float64)
@@ -351,12 +242,7 @@ def record_drop_case(
     if not finite:
         raise RuntimeError("MuJoCo produced a non-finite body state")
     return {
-        "duration_seconds": duration_seconds,
-        "initial_hold_seconds": initial_hold_seconds,
-        "video_duration_seconds": duration_seconds + initial_hold_seconds,
-        "video_frames": total_frames,
-        "physics_steps": simulation_frames * profile.physics_steps_per_video_frame,
-        "rendering": rendering,
+        **recording,
         "initial_bounds": {
             "minimum": initial_bounds.minimum.tolist(),
             "maximum": initial_bounds.maximum.tolist(),
@@ -366,9 +252,4 @@ def record_drop_case(
             "maximum": final_bounds.maximum.tolist(),
         },
         "finite": finite,
-        "files": {
-            "video": "video.mp4",
-            "poster": "poster.jpg",
-            "final": "final.jpg",
-        },
     }

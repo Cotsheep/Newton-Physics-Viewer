@@ -1,1 +1,1 @@
-"""Approved experiment templates."""
+"""Experiment scene implementations; availability is declared separately."""

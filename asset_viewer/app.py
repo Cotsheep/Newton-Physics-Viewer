@@ -199,7 +199,12 @@ def _add_glb(builder: newton.ModelBuilder, args: argparse.Namespace, glb_path: P
             )
 
 
-def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Model, newton.State, JointControlPanel]:
+def build_model(
+    args: argparse.Namespace,
+    asset_path: Path,
+    *,
+    usd_schema_resolvers: list[object] | None = None,
+) -> tuple[newton.Model, newton.State, JointControlPanel]:
     is_glb = asset_path.suffix.lower() == ".glb"
     is_usd = is_usd_asset(asset_path)
     builder = newton.ModelBuilder(
@@ -233,6 +238,7 @@ def build_model(args: argparse.Namespace, asset_path: Path) -> tuple[newton.Mode
                 enable_self_collisions=args.self_collisions,
                 collapse_fixed_joints=args.collapse_fixed_joints,
                 force_show_colliders=args.show_colliders,
+                schema_resolvers=usd_schema_resolvers,
             )
         except ImportError as exc:
             raise RuntimeError(

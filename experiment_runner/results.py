@@ -226,7 +226,22 @@ def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
         "duration_seconds": document.get("duration_seconds"),
         "started_at": document.get("started_at"),
         "finished_at": document.get("finished_at"),
+        "authoritative": document.get("authoritative"),
     }
+    if isinstance(document.get("development_outcome"), str):
+        public["development_outcome"] = document["development_outcome"]
+    for key in (
+        "slope_angle_degrees",
+        "initial_position",
+        "final_position",
+        "displacement_along_slope",
+        "final_linear_velocity",
+        "measurement_units",
+        "finite",
+        "physics_steps",
+    ):
+        if key in document:
+            public[key] = document[key]
     base_url = f"/runs/{run_id}/cases/{case_directory.name}"
     for key, filename in {
         "video_url": "video.mp4",
@@ -263,17 +278,16 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
             if public_case is not None:
                 cases.append(public_case)
 
+    profile = manifest.get("profile")
+    authoritative = profile.get("authoritative") if isinstance(profile, dict) else None
     public = {
         "run_id": run_id,
         "batch_id": manifest.get("batch_id"),
         "template": template,
         "asset_identity": identity,
         "asset_version": version,
-        "profile_name": (
-            manifest.get("profile", {}).get("name")
-            if isinstance(manifest.get("profile"), dict)
-            else None
-        ),
+        "profile_name": profile.get("name") if isinstance(profile, dict) else None,
+        "authoritative": authoritative,
         "created_at": manifest.get("created_at"),
         "started_at": manifest.get("started_at"),
         "finished_at": manifest.get("finished_at"),

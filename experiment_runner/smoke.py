@@ -24,6 +24,7 @@ from .web import install_static_site
 
 
 SMOKE_PROFILE = "mujoco-cpu-wsl-smoke-v1"
+SLOPE_SMOKE_ANGLE_DEGREES = 25.0
 
 
 def _update_manifest(run_directory: Path, **values: Any) -> dict[str, Any]:
@@ -288,6 +289,254 @@ def run_cpu_smoke_drop(
             batch_id=batch_id,
             run_id=run_id,
             status="failed",
+        )
+        install_static_site(data_root)
+        build_result_index(data_root)
+        raise
+
+
+def run_cpu_smoke_slope(
+    data_root: DataRoot,
+    *,
+    asset_identity: str,
+    asset_version: str,
+    git_commit: str | None = None,
+) -> dict[str, Any]:
+    """Run one non-authoritative fixed-angle slope case through native contacts."""
+
+    prepare_cpu_smoke_environment()
+    from .experiments.drop import render_asset_cover
+    from .experiments.slope import (
+        create_slope_scene,
+        measure_slope_geometry,
+        record_slope_case,
+    )
+
+    git_commit = resolve_git_commit(git_commit)
+    data_root.require_initialized()
+    snapshot = snapshot_asset_version(data_root, asset_identity, asset_version)
+    readiness = snapshot["readiness"]["slope_friction"]
+    if readiness["status"] != "ready":
+        reasons = ", ".join(readiness["reason_codes"]) or "unknown"
+        raise ValueError(f"Asset version is not ready for slope_friction: {reasons}")
+
+    profile = get_profile(SMOKE_PROFILE)
+    duration = profile.case_duration_seconds
+    if duration is None:
+        raise ValueError("The smoke profile does not define a case duration")
+    geometry = measure_slope_geometry(
+        snapshot["package_root"] / snapshot["entrypoint"],
+        profile=profile,
+        angle_degrees=SLOPE_SMOKE_ANGLE_DEGREES,
+    )
+    batch = create_batch_scaffold(
+        data_root,
+        asset_identity=snapshot["identity"],
+        asset_version=snapshot["version"],
+        templates=["slope_friction"],
+        profile_name=profile.name,
+        request_summary={
+            "purpose": "local_cpu_smoke",
+            "authoritative": False,
+            "single_case": True,
+            "slope_angle_degrees": SLOPE_SMOKE_ANGLE_DEGREES,
+            "case_duration_seconds": duration,
+        },
+    )
+    batch_id = batch["batch_id"]
+    run_id = batch["runs"][0]["run_id"]
+    public_asset = {key: value for key, value in snapshot.items() if key != "package_root"}
+    run_directory = create_run_scaffold(
+        data_root,
+        run_id=run_id,
+        batch_id=batch_id,
+        template="slope_friction",
+        asset=public_asset,
+        profile=profile.expanded(),
+        git_commit=git_commit,
+    )
+    case_id = "slope-25deg"
+    case_relative = "cases/001-slope-25deg"
+    case_directory = run_directory / case_relative
+    case_directory.mkdir()
+    atomic_write_text(
+        run_directory / "run.log",
+        f"{utc_now()} CPU slope smoke run created; fixed 25-degree single case; "
+        "Warp CPU and software-rendering policy enabled\n",
+    )
+    started_at = utc_now()
+    case_document: dict[str, Any] = {
+        "schema_version": 1,
+        "case_id": case_id,
+        "label": "25° 坡度（CPU 冒烟）",
+        "status": "running",
+        "condition": {
+            "slope_angle_degrees": SLOPE_SMOKE_ANGLE_DEGREES,
+            "characteristic_length_m": geometry.characteristic_length,
+            "effective_length_m": geometry.effective_length,
+            "ramp_length_m": geometry.ramp_length,
+            "ramp_width_m": geometry.ramp_width,
+            "ramp_thickness_m": geometry.ramp_thickness,
+            "initial_surface_gap_m": geometry.surface_gap,
+            "initial_velocity_mps": [0.0, 0.0, 0.0],
+            "initial_angular_velocity_rps": [0.0, 0.0, 0.0],
+        },
+        "authoritative": False,
+        "interpretation": (
+            "Development smoke observation only; moved/stayed_near_start/inconclusive "
+            "is not a formal friction conclusion."
+        ),
+        "started_at": started_at,
+        "finished_at": None,
+        "duration_seconds": duration,
+    }
+    atomic_write_json(case_directory / "case.json", case_document)
+    _update_manifest(run_directory, started_at=started_at)
+    update_run_status(
+        run_directory,
+        status="running",
+        phase="recording",
+        progress="Recording the only 25-degree CPU slope smoke case",
+        current_case=case_id,
+        completed_cases=0,
+        total_cases=1,
+    )
+
+    try:
+        cover_rendering = render_asset_cover(
+            snapshot["package_root"] / snapshot["entrypoint"],
+            profile=profile,
+            output_path=run_directory / "asset-cover.jpg",
+        )
+        _append_run_log(run_directory, "Starting native-contact MuJoCo CPU slope case")
+        scene = create_slope_scene(
+            snapshot["package_root"] / snapshot["entrypoint"],
+            profile=profile,
+            geometry=geometry,
+        )
+        result = record_slope_case(
+            scene,
+            profile=profile,
+            geometry=geometry,
+            output_directory=case_directory,
+            duration_seconds=duration,
+        )
+        finished_at = utc_now()
+        case_document.update(result)
+        case_document["status"] = "succeeded"
+        case_document["finished_at"] = finished_at
+        atomic_write_json(case_directory / "case.json", case_document)
+        _append_run_log(run_directory, "CPU slope smoke case completed successfully")
+        manifest = read_json(run_directory / "manifest.json")
+        environment = manifest["environment"]
+        environment["execution"].update(
+            {
+                "warp_device": "cpu",
+                "rendering_device": result["rendering"]["device"],
+                "opengl_renderer": result["rendering"]["renderer"],
+                "opengl_vendor": result["rendering"]["vendor"],
+                "asset_cover_rendering_device": cover_rendering["device"],
+                "cuda_used": False,
+            }
+        )
+        result_files = [
+            "asset-cover.jpg",
+            "preview.jpg",
+            "run.log",
+            f"{case_relative}/case.json",
+            f"{case_relative}/video.mp4",
+            f"{case_relative}/poster.jpg",
+            f"{case_relative}/final.jpg",
+            "checksums.sha256",
+        ]
+        _update_manifest(
+            run_directory,
+            finished_at=finished_at,
+            result_files=result_files,
+            exit_code=0,
+            failure_summary=None,
+            environment=environment,
+        )
+        update_run_status(
+            run_directory,
+            status="succeeded",
+            phase="finished",
+            progress="1/1 CPU slope smoke case complete",
+            current_case=None,
+            completed_cases=1,
+            total_cases=1,
+            preview_updated_at=finished_at,
+            result_files=result_files,
+        )
+        write_run_checksums(run_directory)
+        _update_batch_status(
+            data_root,
+            batch_id=batch_id,
+            run_id=run_id,
+            status="succeeded",
+        )
+        install_static_site(data_root)
+        build_result_index(data_root)
+        return {
+            "batch_id": batch_id,
+            "run_id": run_id,
+            "case_id": case_id,
+            "status": "succeeded",
+            "authoritative": False,
+            "profile": profile.name,
+            "slope_angle_degrees": SLOPE_SMOKE_ANGLE_DEGREES,
+            "development_outcome": result["development_outcome"],
+        }
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_at = utc_now()
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        terminal_status = "interrupted" if interrupted else "failed"
+        safe_failure = (
+            "CPU smoke slope interrupted (KeyboardInterrupt)"
+            if interrupted
+            else f"CPU smoke slope failed ({type(exc).__name__})"
+        )
+        _append_run_log(run_directory, safe_failure)
+        case_document["status"] = terminal_status
+        case_document["finished_at"] = failed_at
+        case_document["failure"] = {
+            "code": (
+                "cpu_smoke_slope_interrupted"
+                if interrupted
+                else "cpu_smoke_slope_failed"
+            ),
+            "message": safe_failure,
+        }
+        atomic_write_json(case_directory / "case.json", case_document)
+        failed_files = ["run.log", f"{case_relative}/case.json", "checksums.sha256"]
+        _update_manifest(
+            run_directory,
+            finished_at=failed_at,
+            result_files=failed_files,
+            exit_code=130 if interrupted else 1,
+            failure_summary=safe_failure,
+        )
+        update_run_status(
+            run_directory,
+            status=terminal_status,
+            phase=terminal_status,
+            progress=(
+                "The CPU slope smoke case was interrupted"
+                if interrupted
+                else "The CPU slope smoke case failed"
+            ),
+            current_case=None,
+            completed_cases=0,
+            total_cases=1,
+            result_files=failed_files,
+            failure_summary=safe_failure,
+        )
+        write_run_checksums(run_directory)
+        _update_batch_status(
+            data_root,
+            batch_id=batch_id,
+            run_id=run_id,
+            status=terminal_status,
         )
         install_static_site(data_root)
         build_result_index(data_root)

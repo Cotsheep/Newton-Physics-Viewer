@@ -218,18 +218,27 @@ def run_local_smoke(
     *,
     asset_identity: str,
     asset_version: str,
+    template: str = "drop",
 ) -> int:
+    commands = {
+        "drop": ("smoke-drop", "摔落"),
+        "slope_friction": ("smoke-slope", "坡度"),
+    }
+    try:
+        smoke_command, label = commands[template]
+    except KeyError as exc:
+        raise ValueError(f"不支持的本地 CPU 冒烟模板：{template}") from exc
     command = [
         sys.executable,
         "-m",
         "experiment_runner.cli",
-        "smoke-drop",
+        smoke_command,
         asset_identity,
         asset_version,
         "--data-root",
         str(data_root),
     ]
-    print("正在运行一个非正式 MuJoCo CPU 摔落工况……")
+    print(f"正在运行一个非正式 MuJoCo CPU {label}工况……")
     print("物理解算和 Warp 固定为 CPU；Linux 录像仅允许已验证的软件 OpenGL。")
     return subprocess.run(command, check=False).returncode
 
@@ -526,6 +535,40 @@ def _run_smoke_interactive(config: ControllerConfig) -> None:
     print("冒烟运行完成。" if return_code == 0 else f"冒烟运行失败，退出码：{return_code}")
 
 
+def _run_slope_smoke_interactive(config: ControllerConfig) -> None:
+    data_root = _require_data_root(config)
+    rows = [
+        row
+        for row in list_assets_for_menu(data_root)
+        if row["readiness"] in {"摔落、坡度就绪", "部分就绪（仅坡度）"}
+    ]
+    selected = _choose_row(rows, heading="可运行本地坡度冒烟的资产")
+    if selected is None:
+        return
+    print("\n运行摘要")
+    print(f"资产：{selected['identity']}")
+    print(f"版本：{selected['version'][:8]}")
+    print("工况：固定 25°、2 秒的本地 CPU 单案例坡度冒烟")
+    print("物理解算：MuJoCo/Warp CPU；不使用 GPU")
+    print("录像：Windows 使用本机 OpenGL；Linux 必须验证为软件 OpenGL")
+    print("结论边界：仅报告 moved/stayed_near_start/inconclusive，不是正式摩擦结论")
+    print("运行方式：前台执行；按 Ctrl+C 可安全取消并返回主菜单")
+    if not _confirm("确认运行？"):
+        print("已取消。")
+        return
+    return_code = run_local_smoke(
+        data_root.path,
+        asset_identity=selected["identity"],
+        asset_version=selected["version"],
+        template="slope_friction",
+    )
+    print(
+        "坡度冒烟运行完成。"
+        if return_code == 0
+        else f"坡度冒烟运行失败，退出码：{return_code}"
+    )
+
+
 def _open_remote_interactive(config: ControllerConfig) -> None:
     if config.ssh_alias is None:
         raise ValueError("尚未设置 SSH 服务器别名；请先进入“设置”")
@@ -543,11 +586,12 @@ def _show_capabilities() -> None:
     print("- 桌面资产 Viewer（URDF、USD、GLB）")
     print("- inbox 资产验收入库与按模板就绪检查")
     print("- 非正式 MuJoCo CPU 中等高度摔落冒烟")
+    print("- 非正式 MuJoCo CPU 固定 25° 单案例坡度冒烟")
     print("- 本地只读结果页")
     print("- 经 Tailscale/SSH 隧道访问服务器只读结果页")
     print("\n尚未开放")
     print("- 正式 GPU 试验批次")
-    print("- 正式多高度摔落与坡度试验执行")
+    print("- 正式多高度摔落与多角度坡度试验执行")
     print("- Web UI 提交任务、回收或删除结果")
     print("- 自动部署或更新服务器")
 
@@ -561,11 +605,12 @@ def _print_menu(config: ControllerConfig) -> None:
     print("1. 打开桌面资产 Viewer")
     print("2. 验收 inbox 中的资产")
     print("3. 运行本地 CPU 摔落冒烟")
-    print("4. 打开本地结果页")
-    print("5. 打开远程结果页")
-    print("6. 查看已验收资产与就绪状态")
-    print("7. 查看项目能力状态")
-    print("8. 设置")
+    print("4. 运行本地 CPU 坡度冒烟")
+    print("5. 打开本地结果页")
+    print("6. 打开远程结果页")
+    print("7. 查看已验收资产与就绪状态")
+    print("8. 查看项目能力状态")
+    print("9. 设置")
     print("0. 退出")
 
 
@@ -593,19 +638,21 @@ def _interactive(*, config_path: Path = DEFAULT_CONTROLLER_CONFIG) -> int:
             elif choice == "3":
                 _run_smoke_interactive(config)
             elif choice == "4":
+                _run_slope_smoke_interactive(config)
+            elif choice == "5":
                 root = _require_data_root(config)
                 open_local_results(
                     root.path,
                     port=config.local_port,
                     open_browser=config.open_browser,
                 )
-            elif choice == "5":
-                _open_remote_interactive(config)
             elif choice == "6":
-                _show_assets_interactive(config)
+                _open_remote_interactive(config)
             elif choice == "7":
-                _show_capabilities()
+                _show_assets_interactive(config)
             elif choice == "8":
+                _show_capabilities()
+            elif choice == "9":
                 config = _configure_interactive(config, config_path=config_path)
             else:
                 print("无法识别的菜单选项。")
@@ -642,6 +689,14 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("data_root", type=Path)
     smoke.add_argument("asset_identity")
     smoke.add_argument("asset_version")
+
+    slope_smoke = subparsers.add_parser(
+        "local-slope-smoke",
+        help="Run one fixed 25-degree non-authoritative local MuJoCo CPU slope case.",
+    )
+    slope_smoke.add_argument("data_root", type=Path)
+    slope_smoke.add_argument("asset_identity")
+    slope_smoke.add_argument("asset_version")
     return parser
 
 
@@ -669,6 +724,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.data_root,
                 asset_identity=args.asset_identity,
                 asset_version=args.asset_version,
+            )
+        if args.command == "local-slope-smoke":
+            return run_local_smoke(
+                args.data_root,
+                asset_identity=args.asset_identity,
+                asset_version=args.asset_version,
+                template="slope_friction",
             )
     except (OSError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))

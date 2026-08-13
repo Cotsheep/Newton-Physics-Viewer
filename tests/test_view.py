@@ -166,6 +166,7 @@ class AssetPoseFidelityTests(unittest.TestCase):
             self.assertTrue(kwargs["enable_self_collisions"])
             self.assertTrue(kwargs["collapse_fixed_joints"])
             self.assertTrue(kwargs["force_show_colliders"])
+            self.assertIsNone(kwargs["schema_resolvers"])
 
     def test_usd_root_mode_maps_floating_and_fixed_to_newton(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
