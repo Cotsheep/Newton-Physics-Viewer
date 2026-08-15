@@ -11,6 +11,23 @@ _SOFTWARE_RENDERER_MARKERS = (
 )
 
 
+class CpuSmokeEnvironmentUnavailable(RuntimeError):
+    """An explicit host capability gap that may skip opt-in real E2E tests."""
+
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        renderer: str | None = None,
+        vendor: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.renderer = renderer
+        self.vendor = vendor
+
+
 def prepare_cpu_smoke_environment() -> None:
     """Hide CUDA and require software OpenGL before importing the simulation stack."""
 
@@ -30,7 +47,9 @@ def require_software_opengl_renderer(renderer: str | bytes | None) -> str:
     else:
         normalized = ""
     if not any(marker in normalized.casefold() for marker in _SOFTWARE_RENDERER_MARKERS):
-        raise RuntimeError(
-            "CPU smoke requires a verified software OpenGL renderer; refusing hardware rendering"
+        raise CpuSmokeEnvironmentUnavailable(
+            "software_opengl_not_verified",
+            "CPU smoke requires a verified software OpenGL renderer; refusing hardware rendering",
+            renderer=normalized or None,
         )
     return normalized

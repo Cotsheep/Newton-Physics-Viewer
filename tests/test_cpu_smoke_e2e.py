@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import io
 import json
 import math
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from PIL import Image
 
@@ -23,6 +25,8 @@ PREFLIGHT = PROJECT_ROOT / "tests" / "smoke_e2e_preflight.py"
 OPT_IN_ENVIRONMENT = "NEWTON_TEST_RUN_CPU_SMOKE_E2E"
 FFPROBE_ENVIRONMENT = "NEWTON_TEST_FFPROBE"
 TEMP_ROOT_ENVIRONMENT = "NEWTON_TEST_E2E_TEMP_ROOT"
+PREFLIGHT_UNAVAILABLE_EXIT = 77
+PREFLIGHT_UNAVAILABLE_REASONS = {"software_opengl_not_verified"}
 EXPECTED_ARTIFACTS = {
     "asset-cover.jpg",
     "preview.jpg",
@@ -31,6 +35,286 @@ EXPECTED_ARTIFACTS = {
     "status.json",
     "checksums.sha256",
 }
+
+
+def _preflight_report(stdout: str) -> dict[str, Any]:
+    reports: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        if not line.lstrip().startswith("{"):
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AssertionError("software OpenGL preflight emitted invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise AssertionError("software OpenGL preflight report must be a JSON object")
+        reports.append(value)
+    if len(reports) != 1:
+        raise AssertionError("software OpenGL preflight must emit exactly one structured report")
+    report = reports[0]
+    for field in ("status", "reason_code", "renderer", "vendor"):
+        if field not in report:
+            raise AssertionError(f"software OpenGL preflight report is missing {field}")
+    return report
+
+
+def _interpret_preflight(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """Accept success, skip only an explicit environment gap, and fail everything else."""
+
+    diagnostics = f"{completed.stdout}\n{completed.stderr}"
+    if "traceback (most recent call last):" in diagnostics.casefold():
+        raise AssertionError("software OpenGL preflight emitted a traceback")
+
+    try:
+        report = _preflight_report(completed.stdout)
+    except AssertionError as exc:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise AssertionError(f"{exc}: {detail or 'no diagnostic output'}") from exc
+
+    if completed.returncode == PREFLIGHT_UNAVAILABLE_EXIT:
+        reason_code = report.get("reason_code")
+        if (
+            report.get("status") != "unavailable"
+            or reason_code not in PREFLIGHT_UNAVAILABLE_REASONS
+        ):
+            raise AssertionError(
+                "software OpenGL preflight used the unavailable exit code without "
+                "a recognized structured environment reason"
+            )
+        renderer = report.get("renderer") or "未记录"
+        vendor = report.get("vendor") or "未记录"
+        raise unittest.SkipTest(
+            f"software OpenGL unavailable [{reason_code}]: renderer={renderer}, vendor={vendor}"
+        )
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise AssertionError(
+            f"software OpenGL preflight failed with exit code {completed.returncode}: "
+            f"{detail or 'no diagnostic output'}"
+        )
+    if report.get("status") != "available" or report.get("reason_code") is not None:
+        raise AssertionError("successful software OpenGL preflight reported an invalid status")
+    if not isinstance(report.get("renderer"), str) or not report["renderer"].strip():
+        raise AssertionError("successful software OpenGL preflight did not report a renderer")
+    if not isinstance(report.get("vendor"), str) or not report["vendor"].strip():
+        raise AssertionError("successful software OpenGL preflight did not report a vendor")
+    return report
+
+
+def _require_ffmpeg_libx264(
+    *,
+    importer=importlib.import_module,
+    runner=subprocess.run,
+) -> str:
+    """Return the bundled FFmpeg path after checking its encoder list."""
+
+    try:
+        imageio_ffmpeg = importer("imageio_ffmpeg")
+    except ImportError as exc:
+        raise AssertionError("FFmpeg preflight could not import imageio_ffmpeg") from exc
+    except OSError as exc:
+        raise AssertionError(f"FFmpeg dependency import failed with an OS error: {exc}") from exc
+
+    try:
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, OSError) as exc:
+        raise AssertionError(
+            f"FFmpeg preflight could not resolve the bundled executable: {exc}"
+        ) from exc
+
+    try:
+        encoders = runner(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError("FFmpeg encoder query timed out after 30 seconds") from exc
+    except subprocess.CalledProcessError as exc:
+        raise AssertionError(
+            f"FFmpeg encoder query failed with exit code {exc.returncode}"
+        ) from exc
+    except OSError as exc:
+        raise AssertionError(f"FFmpeg encoder query could not start: {exc}") from exc
+    except subprocess.SubprocessError as exc:
+        raise AssertionError(f"FFmpeg encoder query failed: {exc}") from exc
+    if "libx264" not in encoders.stdout:
+        raise unittest.SkipTest("FFmpeg does not provide the required libx264 encoder")
+    return ffmpeg
+
+
+class CpuSmokePreflightProtocolTests(unittest.TestCase):
+    def _completed(
+        self,
+        returncode: int,
+        stdout: str,
+        stderr: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["python", "smoke_e2e_preflight.py"],
+            returncode,
+            stdout,
+            stderr,
+        )
+
+    def test_available_report_continues(self) -> None:
+        report = _interpret_preflight(
+            self._completed(
+                0,
+                json.dumps(
+                    {
+                        "status": "available",
+                        "reason_code": None,
+                        "renderer": "llvmpipe",
+                        "vendor": "Mesa",
+                    }
+                ),
+            )
+        )
+        self.assertEqual(report["renderer"], "llvmpipe")
+
+    def test_explicit_structured_environment_gap_skips(self) -> None:
+        with self.assertRaisesRegex(unittest.SkipTest, "software_opengl_not_verified"):
+            _interpret_preflight(
+                self._completed(
+                    PREFLIGHT_UNAVAILABLE_EXIT,
+                    json.dumps(
+                        {
+                            "status": "unavailable",
+                            "reason_code": "software_opengl_not_verified",
+                            "renderer": "NVIDIA GeForce",
+                            "vendor": "NVIDIA",
+                        }
+                    ),
+                )
+            )
+
+    def test_import_error_is_a_failure_not_a_skip(self) -> None:
+        with self.assertRaises(AssertionError):
+            _interpret_preflight(
+                self._completed(1, "", "ImportError: cannot import name '_headless_viewer'")
+            )
+
+    def test_invalid_json_is_a_failure_not_a_skip(self) -> None:
+        with self.assertRaises(AssertionError):
+            _interpret_preflight(self._completed(0, "{not-json}"))
+
+    def test_unknown_nonzero_exit_is_a_failure_not_a_skip(self) -> None:
+        with self.assertRaises(AssertionError):
+            _interpret_preflight(
+                self._completed(
+                    2,
+                    json.dumps(
+                        {
+                            "status": "unavailable",
+                            "reason_code": "software_opengl_not_verified",
+                            "renderer": None,
+                            "vendor": None,
+                        }
+                    ),
+                    "unknown failure",
+                )
+            )
+
+    def test_traceback_with_structured_unavailable_report_is_a_failure(self) -> None:
+        try:
+            _interpret_preflight(
+                self._completed(
+                    PREFLIGHT_UNAVAILABLE_EXIT,
+                    json.dumps(
+                        {
+                            "status": "unavailable",
+                            "reason_code": "software_opengl_not_verified",
+                            "renderer": None,
+                            "vendor": None,
+                        }
+                    ),
+                    "Traceback (most recent call last):\nRuntimeError: viewer regression",
+                )
+            )
+        except unittest.SkipTest as exc:
+            self.fail(f"traceback was incorrectly converted to skip: {exc}")
+        except AssertionError as exc:
+            self.assertIn("traceback", str(exc).casefold())
+        else:
+            self.fail("traceback was incorrectly accepted")
+
+
+class FfmpegEncoderPreflightTests(unittest.TestCase):
+    @staticmethod
+    def _module() -> mock.Mock:
+        module = mock.Mock()
+        module.get_ffmpeg_exe.return_value = "ffmpeg"
+        return module
+
+    def _assert_failure_not_skip(
+        self,
+        *,
+        importer: mock.Mock,
+        runner: mock.Mock,
+        diagnostic: str,
+    ) -> None:
+        try:
+            _require_ffmpeg_libx264(importer=importer, runner=runner)
+        except unittest.SkipTest as exc:
+            self.fail(f"FFmpeg failure was incorrectly converted to skip: {exc}")
+        except AssertionError as exc:
+            self.assertIn(diagnostic, str(exc).casefold())
+        else:
+            self.fail("FFmpeg failure was incorrectly accepted")
+
+    def test_imageio_ffmpeg_import_error_is_a_failure_not_a_skip(self) -> None:
+        self._assert_failure_not_skip(
+            importer=mock.Mock(side_effect=ImportError("broken locked dependency")),
+            runner=mock.Mock(),
+            diagnostic="import",
+        )
+
+    def test_ffmpeg_start_oserror_is_a_failure_not_a_skip(self) -> None:
+        self._assert_failure_not_skip(
+            importer=mock.Mock(return_value=self._module()),
+            runner=mock.Mock(side_effect=OSError("cannot start executable")),
+            diagnostic="start",
+        )
+
+    def test_ffmpeg_timeout_is_a_failure_not_a_skip(self) -> None:
+        self._assert_failure_not_skip(
+            importer=mock.Mock(return_value=self._module()),
+            runner=mock.Mock(side_effect=subprocess.TimeoutExpired(["ffmpeg"], 30)),
+            diagnostic="timed out",
+        )
+
+    def test_ffmpeg_nonzero_exit_is_a_failure_not_a_skip(self) -> None:
+        self._assert_failure_not_skip(
+            importer=mock.Mock(return_value=self._module()),
+            runner=mock.Mock(side_effect=subprocess.CalledProcessError(3, ["ffmpeg"])),
+            diagnostic="exit code 3",
+        )
+
+    def test_successful_query_without_libx264_is_an_explicit_skip(self) -> None:
+        completed = subprocess.CompletedProcess(["ffmpeg"], 0, " h264 ", "")
+        try:
+            _require_ffmpeg_libx264(
+                importer=mock.Mock(return_value=self._module()),
+                runner=mock.Mock(return_value=completed),
+            )
+        except unittest.SkipTest as exc:
+            self.assertIn("libx264", str(exc))
+        else:
+            self.fail("missing libx264 did not skip the real E2E")
+
+    def test_successful_query_with_libx264_continues(self) -> None:
+        completed = subprocess.CompletedProcess(["ffmpeg"], 0, " V..... libx264 ", "")
+        ffmpeg = _require_ffmpeg_libx264(
+            importer=mock.Mock(return_value=self._module()),
+            runner=mock.Mock(return_value=completed),
+        )
+        self.assertEqual(ffmpeg, "ffmpeg")
 
 
 def _finite_numbers(value: Any) -> bool:
@@ -118,23 +402,7 @@ class RealCpuSmokeE2ETests(unittest.TestCase):
             raise unittest.SkipTest(
                 f"ffprobe is required; install it or set {FFPROBE_ENVIRONMENT}"
             )
-        try:
-            import imageio_ffmpeg
-
-            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-            encoders = subprocess.run(
-                [ffmpeg, "-hide_banner", "-encoders"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=True,
-                timeout=30,
-            )
-        except (ImportError, OSError, subprocess.SubprocessError) as exc:
-            raise unittest.SkipTest(f"FFmpeg preflight unavailable: {exc}") from exc
-        if "libx264" not in encoders.stdout:
-            raise unittest.SkipTest("FFmpeg does not provide the required libx264 encoder")
+        _require_ffmpeg_libx264()
         environment = os.environ.copy()
         environment.update(
             {
@@ -157,18 +425,11 @@ class RealCpuSmokeE2ETests(unittest.TestCase):
                 timeout=60,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise unittest.SkipTest(f"software OpenGL preflight unavailable: {exc}") from exc
-        if preflight.returncode != 0:
-            reason = (preflight.stderr or preflight.stdout).strip().splitlines()[-1:]
-            raise unittest.SkipTest(
-                "software OpenGL preflight failed: " + (reason[0] if reason else "unknown error")
-            )
-        output_lines = [line for line in preflight.stdout.splitlines() if line.startswith("{")]
-        if not output_lines:
-            raise unittest.SkipTest("software OpenGL preflight did not report a renderer")
-        renderer = json.loads(output_lines[-1])["renderer"].casefold()
+            raise AssertionError(f"software OpenGL preflight could not run: {exc}") from exc
+        report = _interpret_preflight(preflight)
+        renderer = report["renderer"].casefold()
         if not any(marker in renderer for marker in ("llvmpipe", "softpipe", "swrast")):
-            raise unittest.SkipTest(f"software OpenGL could not be proven: {renderer}")
+            raise AssertionError(f"software OpenGL preflight accepted an unsafe renderer: {renderer}")
 
     def _run_and_validate(self, template: str) -> tuple[dict[str, Any], dict[str, Any]]:
         temp_root_value = os.environ.get(TEMP_ROOT_ENVIRONMENT)
@@ -227,6 +488,9 @@ class RealCpuSmokeE2ETests(unittest.TestCase):
             self.assertEqual(manifest["template"], template)
             self.assertEqual(status["status"], "succeeded")
             self.assertEqual(case["status"], "succeeded")
+            self.assertFalse(manifest["authoritative"])
+            self.assertFalse(status["authoritative"])
+            self.assertFalse(case["authoritative"])
             self.assertTrue(case["finite"])
             self.assertTrue(_finite_numbers(manifest))
             self.assertTrue(_finite_numbers(case))

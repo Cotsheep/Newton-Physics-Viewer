@@ -81,6 +81,7 @@ _PROFILE_AVAILABILITY = MappingProxyType(
         "mujoco-native-dt1ms-v1": {
             "status": "reserved_not_runnable",
             "runnable": False,
+            "entrypoint": None,
             "entrypoints": (),
             "message": (
                 "Registered for future formal GPU validation; no formal experiment "
@@ -90,6 +91,9 @@ _PROFILE_AVAILABILITY = MappingProxyType(
         "mujoco-cpu-wsl-smoke-v1": {
             "status": "development_smoke_only",
             "runnable": True,
+            # Compatibility field for existing consumers.  New consumers should
+            # use ``entrypoints`` so every runnable smoke command is visible.
+            "entrypoint": "smoke-drop",
             "entrypoints": ("smoke-drop", "smoke-slope"),
             "message": (
                 "Available only for one non-authoritative MuJoCo CPU medium-height "

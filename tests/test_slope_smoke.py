@@ -123,9 +123,47 @@ class SlopeGeometryTests(unittest.TestCase):
         self.assertTrue(profile.use_mujoco_cpu)
         self.assertTrue(profile.use_mujoco_contacts)
 
+    def test_create_slope_scene_single_body_fallback_explains_policy_boundary(self) -> None:
+        from experiment_runner.experiments.slope import create_slope_scene
+
+        builder = mock.Mock(body_count=2)
+        geometry = mock.Mock(asset_translation=np.zeros(3), asset_rotation_xyzw=np.zeros(4))
+        with mock.patch("experiment_runner.experiments.slope.configure_warp_cpu_only"):
+            with mock.patch(
+                "experiment_runner.experiments.slope.newton.ModelBuilder",
+                return_value=builder,
+            ):
+                with mock.patch(
+                    "experiment_runner.experiments.slope._wp_transform",
+                    return_value=object(),
+                ):
+                    with mock.patch(
+                        "experiment_runner.experiments.slope.mujoco_usd_schema_resolvers",
+                        return_value=[],
+                    ):
+                        with self.assertRaises(ValueError) as raised:
+                            create_slope_scene(
+                                FIXTURE,
+                                profile=get_profile("mujoco-cpu-wsl-smoke-v1"),
+                                geometry=geometry,
+                            )
+
+        message = str(raised.exception)
+        self.assertIn("fixed 25-degree local CPU slope smoke", message)
+        self.assertIn("exactly one dynamic rigid body", message)
+        self.assertIn("may still pass generic slope_friction readiness", message)
+        self.assertIn("not a permanent limit on future formal slope experiments", message)
+        self.assertIn("detected 2", message)
+
 
 class SlopeSmokeRunnerTests(unittest.TestCase):
-    def _snapshot(self, root: DataRoot, *, ready: bool = True) -> dict[str, object]:
+    def _snapshot(
+        self,
+        root: DataRoot,
+        *,
+        ready: bool = True,
+        rigid_body_count: int = 1,
+    ) -> dict[str, object]:
         package = root.location("assets") / "fixtures" / "box" / ("a" * 64)
         package.mkdir(parents=True)
         (package / "newton-mujoco.usda").write_text("#usda 1.0\n", encoding="utf-8")
@@ -139,6 +177,7 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
                 "slope_friction": {
                     "status": "ready" if ready else "not_ready",
                     "reason_codes": [] if ready else ["missing_physics_material_binding"],
+                    "checks": {"rigid_body_count": rigid_body_count},
                 },
             },
             "package_root": package,
@@ -159,6 +198,83 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
                         asset_version="a" * 64,
                     )
             self.assertEqual(list(root.location("runs").iterdir()), [])
+            self.assertEqual(list(root.location("batches").iterdir()), [])
+
+    def test_rejects_multi_body_asset_before_geometry_or_run_directories(self) -> None:
+        from experiment_runner.smoke import run_cpu_smoke_slope
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            snapshot = self._snapshot(root, rigid_body_count=2)
+            with mock.patch(
+                "experiment_runner.smoke.snapshot_asset_version",
+                return_value=snapshot,
+            ):
+                with mock.patch(
+                    "experiment_runner.experiments.slope.measure_slope_geometry"
+                ) as measure:
+                    with self.assertRaises(ValueError) as raised:
+                        run_cpu_smoke_slope(
+                            root,
+                            asset_identity="fixtures/box",
+                            asset_version="a" * 64,
+                        )
+            measure.assert_not_called()
+            message = str(raised.exception)
+            self.assertIn("fixed 25-degree local CPU slope smoke", message)
+            self.assertIn("exactly one dynamic rigid body", message)
+            self.assertIn("may still pass generic slope_friction readiness", message)
+            self.assertIn("not a permanent limit on future formal slope experiments", message)
+            self.assertIn("detected 2", message)
+            self.assertEqual(list(root.location("runs").iterdir()), [])
+            self.assertEqual(list(root.location("batches").iterdir()), [])
+
+    def test_rejects_boolean_body_count_as_unknown_before_creating_directories(self) -> None:
+        from experiment_runner.smoke import run_cpu_smoke_slope
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            snapshot = self._snapshot(root, rigid_body_count=True)
+            with mock.patch(
+                "experiment_runner.smoke.snapshot_asset_version",
+                return_value=snapshot,
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    run_cpu_smoke_slope(
+                        root,
+                        asset_identity="fixtures/box",
+                        asset_version="a" * 64,
+                    )
+
+            self.assertIn("detected unknown", str(raised.exception))
+            self.assertNotIn("detected True", str(raised.exception))
+            self.assertEqual(list(root.location("runs").iterdir()), [])
+            self.assertEqual(list(root.location("batches").iterdir()), [])
+
+    def test_rejects_missing_body_count_as_unknown_before_creating_directories(self) -> None:
+        from experiment_runner.smoke import run_cpu_smoke_slope
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            snapshot = self._snapshot(root)
+            del snapshot["readiness"]["slope_friction"]["checks"]["rigid_body_count"]
+            with mock.patch(
+                "experiment_runner.smoke.snapshot_asset_version",
+                return_value=snapshot,
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    run_cpu_smoke_slope(
+                        root,
+                        asset_identity="fixtures/box",
+                        asset_version="a" * 64,
+                    )
+
+            self.assertIn("detected unknown", str(raised.exception))
+            self.assertEqual(list(root.location("runs").iterdir()), [])
+            self.assertEqual(list(root.location("batches").iterdir()), [])
 
     def test_mocked_slope_run_writes_non_authoritative_schema_and_web_group(self) -> None:
         from experiment_runner.experiments.slope import plan_slope_geometry
@@ -236,6 +352,8 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
             self.assertTrue(manifest["profile"]["use_mujoco_cpu"])
             self.assertTrue(manifest["profile"]["use_mujoco_contacts"])
             self.assertFalse(manifest["profile"]["authoritative"])
+            self.assertFalse(manifest["authoritative"])
+            self.assertFalse(read_json(run_directory / "status.json")["authoritative"])
             self.assertEqual(case["condition"]["slope_angle_degrees"], 25.0)
             self.assertEqual(case["development_outcome"], "moved")
             self.assertFalse(case["authoritative"])
@@ -243,6 +361,15 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
             self.assertEqual(public_run["template"], "slope_friction")
             self.assertFalse(public_run["authoritative"])
             self.assertEqual(public_run["cases"][0]["development_outcome"], "moved")
+            run_log = (run_directory / "run.log").read_text(encoding="utf-8")
+            self.assertNotIn("software-rendering policy enabled", run_log)
+            self.assertIn("MuJoCo/Warp physics locked to CPU", run_log)
+            self.assertIn("CUDA hidden", run_log)
+            self.assertIn(
+                "Viewer rendering initialized; device=software-cpu; "
+                "renderer=llvmpipe; vendor=Mesa",
+                run_log,
+            )
 
     def test_recording_failure_is_auditable(self) -> None:
         from experiment_runner.experiments.slope import plan_slope_geometry
@@ -289,6 +416,8 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
             self.assertEqual(case["failure"]["code"], "cpu_smoke_slope_failed")
             self.assertEqual(manifest["exit_code"], 1)
             self.assertEqual(status["status"], "failed")
+            self.assertFalse(manifest["authoritative"])
+            self.assertFalse(status["authoritative"])
             self.assertTrue((run_directory / "checksums.sha256").is_file())
 
     def test_slope_recording_rejects_non_finite_state(self) -> None:
@@ -345,6 +474,8 @@ class SlopeSmokeRunnerTests(unittest.TestCase):
             self.assertEqual(case["failure"]["code"], "cpu_smoke_slope_interrupted")
             self.assertEqual(manifest["exit_code"], 130)
             self.assertEqual(status["status"], "interrupted")
+            self.assertFalse(manifest["authoritative"])
+            self.assertFalse(status["authoritative"])
 
 
 class SlopeCliAndControllerTests(unittest.TestCase):
@@ -376,7 +507,7 @@ class SlopeCliAndControllerTests(unittest.TestCase):
             return_value=expected,
         ) as run:
             with mock.patch("experiment_runner.cli._data_root", return_value=mock.sentinel.root):
-                with mock.patch("builtins.print"):
+                with mock.patch("builtins.print") as output:
                     return_code = main(
                         [
                             "smoke-slope",
@@ -388,6 +519,9 @@ class SlopeCliAndControllerTests(unittest.TestCase):
                     )
 
         self.assertEqual(return_code, 0)
+        rendered = "\n".join(" ".join(map(str, call.args)) for call in output.call_args_list)
+        self.assertIn("CPU", rendered)
+        self.assertIn("不是正式摩擦结论", rendered)
         run.assert_called_once_with(
             mock.sentinel.root,
             asset_identity="fixtures/blue-box",
@@ -425,9 +559,54 @@ class SlopeCliAndControllerTests(unittest.TestCase):
             root.initialize()
             config = ControllerConfig(data_root=root.path)
             rows = [
-                {"identity": "drop-only", "version": "a" * 64, "readiness": "部分就绪（仅摔落）"},
-                {"identity": "slope-only", "version": "b" * 64, "readiness": "部分就绪（仅坡度）"},
-                {"identity": "both", "version": "c" * 64, "readiness": "摔落、坡度就绪"},
+                {
+                    "identity": "drop-only",
+                    "version": "a" * 64,
+                    "readiness": "故意变化的显示文字",
+                    "template_readiness": {
+                        "drop": {"status": "ready", "checks": {"rigid_body_count": 1}},
+                        "slope_friction": {
+                            "status": "not_ready",
+                            "checks": {"rigid_body_count": 1},
+                        },
+                    },
+                },
+                {
+                    "identity": "slope-only",
+                    "version": "b" * 64,
+                    "readiness": "另一段显示文字",
+                    "template_readiness": {
+                        "drop": {"status": "not_ready", "checks": {"rigid_body_count": 1}},
+                        "slope_friction": {
+                            "status": "ready",
+                            "checks": {"rigid_body_count": 1},
+                        },
+                    },
+                },
+                {
+                    "identity": "both",
+                    "version": "c" * 64,
+                    "readiness": "不参与选择逻辑",
+                    "template_readiness": {
+                        "drop": {"status": "ready", "checks": {"rigid_body_count": 1}},
+                        "slope_friction": {
+                            "status": "ready",
+                            "checks": {"rigid_body_count": 1},
+                        },
+                    },
+                },
+                {
+                    "identity": "multi-body",
+                    "version": "d" * 64,
+                    "readiness": "通用坡度就绪",
+                    "template_readiness": {
+                        "drop": {"status": "ready", "checks": {"rigid_body_count": 2}},
+                        "slope_friction": {
+                            "status": "ready",
+                            "checks": {"rigid_body_count": 2},
+                        },
+                    },
+                },
             ]
             answers = iter(["1", ""])
             with mock.patch("experiment_runner.controller.list_assets_for_menu", return_value=rows):
@@ -441,7 +620,37 @@ class SlopeCliAndControllerTests(unittest.TestCase):
             self.assertIn("slope-only", rendered)
             self.assertIn("both", rendered)
             self.assertNotIn("drop-only", rendered)
+            self.assertNotIn("multi-body", rendered)
             self.assertIn("已取消", rendered)
+
+    def test_menu_asset_rows_keep_structured_readiness_for_policy_decisions(self) -> None:
+        from experiment_runner.controller import list_assets_for_menu
+
+        readiness = {
+            "drop": {"status": "ready", "reason_codes": [], "checks": {"rigid_body_count": 2}},
+            "slope_friction": {
+                "status": "ready",
+                "reason_codes": [],
+                "checks": {"rigid_body_count": 2},
+            },
+        }
+        with mock.patch(
+            "experiment_runner.controller.list_asset_versions",
+            return_value=[{"identity": "fixtures/multi", "version": "a" * 64}],
+        ):
+            with mock.patch(
+                "experiment_runner.controller.inspect_template_readiness",
+                return_value=readiness,
+            ):
+                data_root = mock.Mock()
+                data_root.resolve_managed.return_value = Path("asset.usda")
+                rows = list_assets_for_menu(data_root)
+
+        self.assertIs(rows[0]["template_readiness"], readiness)
+        self.assertEqual(
+            rows[0]["template_readiness"]["slope_friction"]["checks"]["rigid_body_count"],
+            2,
+        )
 
     def test_result_index_exposes_authoritative_flag_for_slope_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -469,6 +678,14 @@ class SlopeCliAndControllerTests(unittest.TestCase):
                     "duration_seconds": 2.0,
                     "authoritative": False,
                     "development_outcome": "inconclusive",
+                    "slope_angle_degrees": 25.0,
+                    "displacement_along_slope": 0.0,
+                    "final_linear_velocity": [0.0, 0.0, 0.0],
+                    "measurement_units": {
+                        "displacement": "m",
+                        "linear_velocity": "m/s",
+                    },
+                    "finite": True,
                 },
             )
             update_run_status(
@@ -485,6 +702,64 @@ class SlopeCliAndControllerTests(unittest.TestCase):
             self.assertFalse(run["authoritative"])
             self.assertFalse(run["cases"][0]["authoritative"])
             self.assertEqual(run["cases"][0]["development_outcome"], "inconclusive")
+            self.assertEqual(run["cases"][0]["displacement_along_slope"], 0.0)
+            self.assertEqual(run["cases"][0]["final_linear_velocity"], [0.0, 0.0, 0.0])
+
+    def test_result_index_omits_non_finite_slope_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            run_directory = create_run_scaffold(
+                root,
+                run_id="slope-friction-20260813T120000Z-deadbeef",
+                batch_id="batch-20260813T120000Z-deadbeef",
+                template="slope_friction",
+                asset={"identity": "fixtures/box", "version": "a" * 64},
+                profile=get_profile("mujoco-cpu-wsl-smoke-v1").expanded(),
+                git_commit="b" * 40,
+            )
+            case_directory = run_directory / "cases" / "001-slope-25deg"
+            case_directory.mkdir()
+            atomic_write_json(
+                case_directory / "case.json",
+                {
+                    "schema_version": 1,
+                    "case_id": "slope-25deg",
+                    "status": "succeeded",
+                    "condition": {},
+                    "authoritative": False,
+                    "slope_angle_degrees": math.nan,
+                    "displacement_along_slope": math.inf,
+                    "final_linear_velocity": [0.0, math.nan, 0.0],
+                    "finite": False,
+                },
+            )
+            index = build_result_index(root)
+            public_case = index["assets"][0]["runs"][0]["cases"][0]
+
+            self.assertNotIn("slope_angle_degrees", public_case)
+            self.assertNotIn("displacement_along_slope", public_case)
+            self.assertNotIn("final_linear_velocity", public_case)
+            self.assertFalse(public_case["finite"])
+            json.dumps(index, allow_nan=False)
+
+    def test_web_consumer_prominently_labels_smoke_and_formats_slope_metrics_safely(self) -> None:
+        script = (
+            Path(__file__).resolve().parent.parent
+            / "experiment_runner"
+            / "web_static"
+            / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("非正式开发冒烟", script)
+        self.assertIn("不能作为正式物理结论", script)
+        self.assertIn("Number.isFinite", script)
+        self.assertIn("slope_angle_degrees", script)
+        self.assertIn("displacement_along_slope", script)
+        self.assertIn("development_outcome", script)
+        self.assertIn("final_linear_velocity", script)
+        self.assertIn('["有限性", formatFiniteState(testCase.finite)]', script)
+        self.assertIn("m/s", script)
+        self.assertIn("未记录", script)
 
 
 if __name__ == "__main__":

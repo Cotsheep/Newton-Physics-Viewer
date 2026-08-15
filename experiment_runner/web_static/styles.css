@@ -402,6 +402,41 @@ h1 {
   line-height: 1.55;
 }
 
+.smoke-notice {
+  display: grid;
+  gap: 3px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(244, 196, 107, 0.48);
+  border-radius: 9px;
+  color: #ffe3a8;
+  background: rgba(244, 196, 107, 0.09);
+  font-size: 12px;
+}
+
+.smoke-notice strong {
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.metric-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+
+.metric-list dt {
+  color: var(--muted);
+}
+
+.metric-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .case-actions {
   display: flex;
   gap: 12px;

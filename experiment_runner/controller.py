@@ -9,7 +9,7 @@ import time
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .assets import (
     ASSET_ENTRYPOINT,
@@ -172,7 +172,8 @@ def open_remote_results(
         remote_port=remote_port,
     )
     print("正在建立只读结果浏览会话……")
-    print("这个窗口不使用 GPU；关闭窗口或按 Ctrl+C 只会结束结果访问。")
+    print("只读结果服务不会启动物理仿真；本地浏览器播放时可能使用本机图形加速。")
+    print("关闭窗口或按 Ctrl+C 只会结束结果访问。")
     process = subprocess.Popen(command)
     try:
         _wait_for_local_port(process, port=local_port)
@@ -201,7 +202,8 @@ def open_local_results(
     server = create_result_server(root, port=_validated_port(port))
     address = f"http://127.0.0.1:{server.server_port}/"
     print(f"本地结果页：{address}")
-    print("按 Ctrl+C 关闭；这个只读服务不使用 GPU。")
+    print("只读结果服务不会启动物理仿真；浏览器播放时可能使用本机图形加速。")
+    print("按 Ctrl+C 关闭。")
     if open_browser:
         webbrowser.open(address)
     try:
@@ -239,7 +241,9 @@ def run_local_smoke(
         str(data_root),
     ]
     print(f"正在运行一个非正式 MuJoCo CPU {label}工况……")
-    print("物理解算和 Warp 固定为 CPU；Linux 录像仅允许已验证的软件 OpenGL。")
+    print("物理解算和 Warp 固定为 CPU，不使用 CUDA。")
+    print("Windows 录像使用系统 OpenGL，可能使用本机图形 GPU。")
+    print("Linux 录像仅允许已验证的 Mesa 软件 OpenGL。")
     return subprocess.run(command, check=False).returncode
 
 
@@ -390,7 +394,11 @@ def discover_inbox_packages(data_root: DataRoot) -> list[str]:
     return sorted(set(packages), key=str.casefold)
 
 
-def _readiness_label(data_root: DataRoot, identity: str, version: str) -> str:
+def _menu_readiness(
+    data_root: DataRoot,
+    identity: str,
+    version: str,
+) -> dict[str, Any] | None:
     entrypoint = data_root.resolve_managed(
         "assets",
         *identity.split("/"),
@@ -398,8 +406,13 @@ def _readiness_label(data_root: DataRoot, identity: str, version: str) -> str:
         ASSET_ENTRYPOINT,
     )
     try:
-        readiness = inspect_template_readiness(entrypoint)
+        return inspect_template_readiness(entrypoint)
     except Exception:
+        return None
+
+
+def _readiness_label(readiness: dict[str, Any] | None) -> str:
+    if readiness is None:
         return "就绪状态检查失败"
     drop_ready = readiness["drop"]["status"] == "ready"
     slope_ready = readiness["slope_friction"]["status"] == "ready"
@@ -412,22 +425,42 @@ def _readiness_label(data_root: DataRoot, identity: str, version: str) -> str:
     return "未就绪"
 
 
-def list_assets_for_menu(data_root: DataRoot) -> list[dict[str, str]]:
+def list_assets_for_menu(data_root: DataRoot) -> list[dict[str, Any]]:
     rows = list_asset_versions(data_root)
-    return [
-        {
-            **row,
-            "readiness": _readiness_label(
-                data_root,
-                row["identity"],
-                row["version"],
-            ),
-        }
-        for row in rows
-    ]
+    menu_rows: list[dict[str, Any]] = []
+    for row in rows:
+        readiness = _menu_readiness(data_root, row["identity"], row["version"])
+        menu_rows.append(
+            {
+                **row,
+                "readiness": _readiness_label(readiness),
+                "template_readiness": readiness or {},
+            }
+        )
+    return menu_rows
 
 
-def _choose_row(rows: list[dict[str, str]], *, heading: str) -> dict[str, str] | None:
+def _template_ready(row: dict[str, Any], template: str) -> bool:
+    readiness = row.get("template_readiness")
+    if not isinstance(readiness, dict):
+        return False
+    result = readiness.get(template)
+    return isinstance(result, dict) and result.get("status") == "ready"
+
+
+def _single_body_slope_smoke_ready(row: dict[str, Any]) -> bool:
+    if not _template_ready(row, "slope_friction"):
+        return False
+    result = row["template_readiness"]["slope_friction"]
+    checks = result.get("checks")
+    return (
+        isinstance(checks, dict)
+        and not isinstance(checks.get("rigid_body_count"), bool)
+        and checks.get("rigid_body_count") == 1
+    )
+
+
+def _choose_row(rows: list[dict[str, Any]], *, heading: str) -> dict[str, Any] | None:
     if not rows:
         print("没有可选择的项目。")
         return None
@@ -512,7 +545,7 @@ def _run_smoke_interactive(config: ControllerConfig) -> None:
     rows = [
         row
         for row in list_assets_for_menu(data_root)
-        if row["readiness"] in {"摔落、坡度就绪", "部分就绪（仅摔落）"}
+        if _template_ready(row, "drop")
     ]
     selected = _choose_row(rows, heading="可运行本地摔落冒烟的资产")
     if selected is None:
@@ -521,8 +554,9 @@ def _run_smoke_interactive(config: ControllerConfig) -> None:
     print(f"资产：{selected['identity']}")
     print(f"版本：{selected['version'][:8]}")
     print("工况：本地 CPU 中等高度摔落冒烟")
-    print("物理解算：MuJoCo/Warp CPU")
-    print("录像：Windows 使用本机 OpenGL；Linux 必须验证为软件 OpenGL")
+    print("物理解算：MuJoCo/Warp CPU，不使用 CUDA")
+    print("录像：Windows 使用系统 OpenGL，可能使用本机图形 GPU")
+    print("录像：Linux 必须验证为 Mesa 软件 OpenGL")
     print("正式物理结论：否")
     if not _confirm("确认运行？"):
         print("已取消。")
@@ -540,7 +574,7 @@ def _run_slope_smoke_interactive(config: ControllerConfig) -> None:
     rows = [
         row
         for row in list_assets_for_menu(data_root)
-        if row["readiness"] in {"摔落、坡度就绪", "部分就绪（仅坡度）"}
+        if _single_body_slope_smoke_ready(row)
     ]
     selected = _choose_row(rows, heading="可运行本地坡度冒烟的资产")
     if selected is None:
@@ -549,8 +583,9 @@ def _run_slope_smoke_interactive(config: ControllerConfig) -> None:
     print(f"资产：{selected['identity']}")
     print(f"版本：{selected['version'][:8]}")
     print("工况：固定 25°、2 秒的本地 CPU 单案例坡度冒烟")
-    print("物理解算：MuJoCo/Warp CPU；不使用 GPU")
-    print("录像：Windows 使用本机 OpenGL；Linux 必须验证为软件 OpenGL")
+    print("物理解算：MuJoCo/Warp CPU，不使用 CUDA")
+    print("录像：Windows 使用系统 OpenGL，可能使用本机图形 GPU")
+    print("录像：Linux 必须验证为 Mesa 软件 OpenGL")
     print("结论边界：仅报告 moved/stayed_near_start/inconclusive，不是正式摩擦结论")
     print("运行方式：前台执行；按 Ctrl+C 可安全取消并返回主菜单")
     if not _confirm("确认运行？"):

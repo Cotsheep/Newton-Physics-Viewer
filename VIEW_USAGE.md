@@ -7,7 +7,9 @@ Web UI 的架构、第一阶段范围及后续演进建议参见
 [`docs/远程物理试验运行与结果查看路线.md`](docs/远程物理试验运行与结果查看路线.md)。
 桌面 Viewer 与自动试验是两条不同管线：Viewer 可按所选求解器使用本机 GPU，并使用
 Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则固定为非正式 MuJoCo CPU、
-原生 MuJoCo contacts。二者结果不能直接比较，坡度冒烟也不产生正式摩擦结论。
+原生 MuJoCo contacts，物理解算不使用 CUDA。Windows 冒烟录像使用系统 OpenGL，
+可能使用本机图形 GPU；Linux 冒烟只允许经过验证的 Mesa 软件 OpenGL。图形渲染设备不改变冒烟的
+非正式 CPU 物理边界。二者结果不能直接比较，坡度冒烟也不产生正式摩擦结论。
 
 ## 代码目录
 

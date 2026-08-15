@@ -208,11 +208,13 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(formal["authoritative"])
         self.assertEqual(formal["availability"]["status"], "reserved_not_runnable")
         self.assertFalse(formal["availability"]["runnable"])
+        self.assertIsNone(formal["availability"]["entrypoint"])
         self.assertEqual(formal["availability"]["entrypoints"], [])
 
         self.assertFalse(smoke["authoritative"])
         self.assertEqual(smoke["availability"]["status"], "development_smoke_only")
         self.assertTrue(smoke["availability"]["runnable"])
+        self.assertEqual(smoke["availability"]["entrypoint"], "smoke-drop")
         self.assertEqual(
             smoke["availability"]["entrypoints"],
             ["smoke-drop", "smoke-slope"],
@@ -221,6 +223,10 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(
             describe_profiles()["mujoco-cpu-wsl-smoke-v1"]["availability"]["entrypoints"],
             ["smoke-drop", "smoke-slope"],
+        )
+        self.assertEqual(
+            describe_profiles()["mujoco-cpu-wsl-smoke-v1"]["availability"]["entrypoint"],
+            "smoke-drop",
         )
 
     def test_profiles_help_describes_registration_and_availability_not_approval(self) -> None:
@@ -471,9 +477,9 @@ class CpuSmokeOutputTests(unittest.TestCase):
                 return {
                     "duration_seconds": 2.0,
                     "rendering": {
-                        "device": "software-cpu",
-                        "renderer": "llvmpipe",
-                        "vendor": "Mesa",
+                        "device": "system-opengl",
+                        "renderer": "Windows Test GL",
+                        "vendor": "Test Vendor",
                     },
                 }
 
@@ -509,6 +515,85 @@ class CpuSmokeOutputTests(unittest.TestCase):
             self.assertEqual(cover, b"asset-only-cover")
             self.assertNotEqual(cover, poster)
             render_cover.assert_called_once()
+            run_log = (run_directory / "run.log").read_text(encoding="utf-8")
+            self.assertNotIn("software-rendering policy enabled", run_log)
+            self.assertIn("MuJoCo/Warp physics locked to CPU", run_log)
+            self.assertIn("CUDA hidden", run_log)
+            self.assertIn(
+                "Viewer rendering initialized; device=system-opengl; "
+                "renderer=Windows Test GL; vendor=Test Vendor",
+                run_log,
+            )
+            self.assertNotIn("device=software-cpu", run_log)
+
+    def test_drop_keyboard_interrupt_writes_interrupted_non_authoritative_status(self) -> None:
+        from experiment_runner.smoke import run_cpu_smoke_drop
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            package = root.location("assets") / "fixtures" / "box" / ("a" * 64)
+            package.mkdir(parents=True)
+            (package / ASSET_ENTRYPOINT).write_text("#usda 1.0\n", encoding="utf-8")
+            snapshot = {
+                "identity": "fixtures/box",
+                "version": "a" * 64,
+                "entrypoint": ASSET_ENTRYPOINT,
+                "dependencies": [],
+                "readiness": {
+                    "drop": {"status": "ready", "reason_codes": []},
+                    "slope_friction": {"status": "not_ready", "reason_codes": ["fixture"]},
+                },
+                "package_root": package,
+            }
+            geometry = mock.Mock(
+                clearance=0.2,
+                characteristic_length=0.2,
+                effective_length=0.2,
+                initial_bounds=mock.Mock(),
+            )
+            with mock.patch("experiment_runner.smoke.resolve_git_commit", return_value="b" * 40):
+                with mock.patch(
+                    "experiment_runner.smoke.snapshot_asset_version",
+                    return_value=snapshot,
+                ):
+                    with mock.patch(
+                        "experiment_runner.experiments.drop.measure_drop_geometry",
+                        return_value=geometry,
+                    ):
+                        with mock.patch(
+                            "experiment_runner.experiments.drop.render_asset_cover",
+                            return_value={
+                                "device": "system-opengl",
+                                "renderer": "test-renderer",
+                                "vendor": "test-vendor",
+                            },
+                        ):
+                            with mock.patch(
+                                "experiment_runner.experiments.drop.create_drop_scene",
+                                return_value=object(),
+                            ):
+                                with mock.patch(
+                                    "experiment_runner.experiments.drop.record_drop_case",
+                                    side_effect=KeyboardInterrupt,
+                                ):
+                                    with self.assertRaises(KeyboardInterrupt):
+                                        run_cpu_smoke_drop(
+                                            root,
+                                            asset_identity="fixtures/box",
+                                            asset_version="a" * 64,
+                                        )
+
+            run_directory = next(root.location("runs").iterdir())
+            manifest = read_json(run_directory / "manifest.json")
+            status = read_json(run_directory / "status.json")
+            case = read_json(run_directory / "cases" / "001-medium" / "case.json")
+            self.assertEqual(manifest["exit_code"], 130)
+            self.assertFalse(manifest["authoritative"])
+            self.assertEqual(status["status"], "interrupted")
+            self.assertFalse(status["authoritative"])
+            self.assertEqual(case["status"], "interrupted")
+            self.assertFalse(case["authoritative"])
 
 
 class ResultBrowserTests(unittest.TestCase):
@@ -549,6 +634,7 @@ class ResultBrowserTests(unittest.TestCase):
                 "duration_seconds": 2.0,
                 "started_at": "2026-08-07T12:00:00Z",
                 "finished_at": "2026-08-07T12:00:02Z",
+                "authoritative": False,
             },
         )
         (case_directory / "video.mp4").write_bytes(b"0123456789abcdef")
@@ -591,6 +677,25 @@ class ResultBrowserTests(unittest.TestCase):
         self.assertIn("machine", environment["hardware"])
         self.assertEqual(environment["execution"]["physics_device"], "cpu")
         self.assertFalse(environment["execution"]["cuda_used"])
+        self.assertFalse(manifest["authoritative"])
+        status = read_json(self.root.location("runs") / self.run_id / "status.json")
+        self.assertFalse(status["authoritative"])
+
+    def test_status_keeps_non_authoritative_flag_across_every_terminal_state(self) -> None:
+        run_directory = self.root.location("runs") / self.run_id
+        for state in ("running", "succeeded", "failed", "interrupted"):
+            with self.subTest(state=state):
+                document = update_run_status(
+                    run_directory,
+                    status=state,
+                    phase=state,
+                    progress=state,
+                    current_case=None,
+                    completed_cases=0,
+                    total_cases=1,
+                )
+                self.assertFalse(document["authoritative"])
+                self.assertFalse(read_json(run_directory / "status.json")["authoritative"])
 
     def test_read_only_server_supports_head_and_byte_ranges(self) -> None:
         server = create_result_server(self.root, port=0)
@@ -693,16 +798,22 @@ class ControllerTests(unittest.TestCase):
             "experiment_runner.controller.subprocess.run",
             return_value=completed,
         ) as run:
-            return_code = run_local_smoke(
-                Path("D:/newton-data"),
-                asset_identity="fixtures/blue box",
-                asset_version="a" * 64,
-            )
+            with mock.patch("builtins.print") as output:
+                return_code = run_local_smoke(
+                    Path("D:/newton-data"),
+                    asset_identity="fixtures/blue box",
+                    asset_version="a" * 64,
+                )
         self.assertEqual(return_code, 0)
         command = run.call_args.args[0]
         self.assertIn("fixtures/blue box", command)
         self.assertNotIn("shell", run.call_args.kwargs)
         self.assertFalse(run.call_args.kwargs["check"])
+        rendered = "\n".join(" ".join(map(str, call.args)) for call in output.call_args_list)
+        self.assertIn("物理解算", rendered)
+        self.assertIn("不使用 CUDA", rendered)
+        self.assertIn("Windows", rendered)
+        self.assertIn("可能使用本机图形 GPU", rendered)
 
     def test_remote_browser_timeout_always_stops_ssh_process(self) -> None:
         process = mock.Mock()
@@ -746,6 +857,41 @@ class ControllerTests(unittest.TestCase):
         with mock.patch.object(DataRoot, "require_existing_owned_directory") as ownership:
             _data_root(args)
         ownership.assert_called_once_with()
+
+
+class DocumentationBoundaryTests(unittest.TestCase):
+    def test_user_docs_separate_cpu_physics_from_windows_graphics_rendering(self) -> None:
+        project_root = Path(__file__).resolve().parent.parent
+        for relative in (
+            "README.md",
+            "VIEW_USAGE.md",
+            "docs/本地 CPU 冒烟与结果页使用说明.md",
+        ):
+            with self.subTest(relative=relative):
+                content = (project_root / relative).read_text(encoding="utf-8")
+                self.assertIn("不使用 CUDA", content)
+                self.assertIn("可能使用本机图形 GPU", content)
+                self.assertIn("Mesa", content)
+
+    def test_local_guide_documents_profile_compatibility_and_real_e2e_rules(self) -> None:
+        guide = (
+            Path(__file__).resolve().parent.parent
+            / "docs"
+            / "本地 CPU 冒烟与结果页使用说明.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("availability.entrypoint", guide)
+        self.assertIn("兼容", guide)
+        self.assertIn("availability.entrypoints", guide)
+        self.assertNotIn("7 项全部通过", guide)
+        self.assertIn("14 项全部通过、0 项跳过", guide)
+        self.assertIn("两项真实 E2E 均未跳过", guide)
+        self.assertIn("推荐", guide)
+        self.assertIn("NEWTON_TEST_RUN_CPU_SMOKE_E2E=1", guide)
+        self.assertIn("ffprobe", guide)
+        self.assertIn("libx264", guide)
+        self.assertIn("Mesa", guide)
+        self.assertIn("Windows", guide)
+        self.assertIn("跳过不等于通过", guide)
 
 
 if __name__ == "__main__":

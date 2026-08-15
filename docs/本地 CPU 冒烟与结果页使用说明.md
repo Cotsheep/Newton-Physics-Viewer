@@ -42,19 +42,25 @@ copy "tests\fixtures\smoke_asset\newton-mujoco.usda" "%USERPROFILE%\newton-test-
 3. “打开本地结果页”。
 
 菜单在内部保留完整的 64 位 `asset_version`，不要求手动复制哈希。冒烟把 MuJoCo 和 Warp
-固定到 CPU，推进 2 秒物理时间；录像开头另含 0.5 秒静止展示，因此 640×360、50 FPS 视频
-总长约 2.5 秒。Windows 录像使用本机 OpenGL；Linux 在导入 Newton/Warp 前隐藏 CUDA，要求
+固定到 CPU，物理解算不使用 CUDA，推进 2 秒物理时间；录像开头另含 0.5 秒静止展示，因此
+640×360、50 FPS 视频总长约 2.5 秒。Windows 录像使用系统 OpenGL，可能使用本机图形 GPU；
+这不等于正式服务器 GPU 物理解算。Linux 在导入 Newton/Warp 前隐藏 CUDA，要求
 Mesa 软件 OpenGL，并在推进物理时间前验证实际渲染器，验证失败时拒绝回退到硬件渲染。
 结果清单中的 `authoritative` 为 `false`，不能与以后服务器生成的正式 GPU 结果混为一谈。
 坡度入口固定为 25° 单案例，资产以零线速度和零角速度放在坡面上方的小安全间隙处，使用
 MuJoCo 原生接触推进。结果记录初末位置、沿坡位移、末速度和
 `moved`/`stayed_near_start`/`inconclusive` 开发观察；这些字段不构成正式摩擦结论。
+当前固定 25° 本地坡度冒烟只接受就绪信息中 `rigid_body_count == 1` 的资产。多刚体资产仍可
+通过通用 `slope_friction` 就绪检查，但不会出现在本地坡度冒烟菜单中，直接调用底层命令也会
+在创建批次或运行目录前拒绝。这只是当前开发冒烟工况的实现限制，不是正式坡度试验的永久限制。
 `newton-test-remote profiles` 的 `availability.entrypoints` 是列表：CPU profile 当前列出
 `smoke-drop` 与 `smoke-slope`；正式 profile 保持 `reserved_not_runnable`、`runnable=false`
-且入口列表为空。旧的单值 `availability.entrypoint` 字段不再输出。
+且入口列表为空。旧的单值 `availability.entrypoint` 作为兼容字段继续输出：CPU profile 为
+`"smoke-drop"`，正式预留 profile 为 `null`；新代码推荐读取 `availability.entrypoints`。
+本次兼容修复不删除旧字段，也不开放任何正式 GPU 命令。
 
 当前验收层级需要分开理解：实现和自动化测试覆盖 Windows 与 WSL；真实求解、录像、图片、
-清单和结果页端到端链路已在 WSL 的 CPU 与 Mesa 软件 OpenGL 环境运行验证。Windows 的真实
+清单和结果页端到端链路需要在 WSL 的 CPU 与 Mesa 软件 OpenGL 环境用下文的显式命令验证。Windows 的真实
 端到端用例会因为无法证明软件 OpenGL 而明确跳过；远程服务器与正式数据目录未连接、未检查，
 也没有运行任何服务器 GPU 仿真。人工结果页检查仍应按下文步骤进行，不能由自动化测试替代。
 
@@ -72,6 +78,35 @@ uv run newton-test
 
 菜单行为与 Windows 相同，路径改为 Linux 路径。试验数据目录应位于仓库之外的 WSL ext4
 目录。Windows 双击启动文件只用于 Windows，WSL 直接运行上面的命令。
+
+默认全套测试不会自动执行真实 CPU 冒烟 E2E；这两项用例需要实际启动 MuJoCo、创建录像并
+验证 MP4，耗时且依赖 Linux 软件渲染，因此保持显式 opt-in。默认命令中看到这两项 `skipped`
+只表示没有运行，跳过不等于通过。
+
+WSL 中运行真实摔落与坡度 E2E 的通用命令如下；临时根目录必须位于源码仓库之外：
+
+```bash
+NEWTON_TEST_RUN_CPU_SMOKE_E2E=1 \
+NEWTON_TEST_E2E_TEMP_ROOT=/path/outside/Newton-Test/e2e-temp \
+NEWTON_TEST_FFPROBE="$(command -v ffprobe)" \
+uv run --frozen python -m unittest tests.test_cpu_smoke_e2e -v
+```
+
+运行前必须确认：`ffprobe` 可执行；`imageio-ffmpeg` 自带的 FFmpeg 提供 `libx264`；OpenGL
+renderer 能验证为 Mesa 的 `llvmpipe`、`softpipe` 或 `swrast`。只有系统 `ffprobe` 缺失、
+FFmpeg 成功查询编码器后明确缺少 `libx264`，或结构化 OpenGL 预检返回认可的环境缺失时，
+真实 E2E 才允许跳过。`imageio-ffmpeg` 导入或 API 错误、FFmpeg 启动失败、超时、非零退出、
+产品 traceback、无效 JSON 或未知非零退出码必须报失败。Windows 会明确跳过真实 E2E，
+因为当前链路无法证明其系统 OpenGL 是软件渲染；这不否定 Windows 的单元测试，也不能被
+记录成 Windows 真实 E2E 通过。
+
+2026-08-15 对当前工作树的本地 WSL 验收实际运行了当前 `tests.test_cpu_smoke_e2e` 模块：
+14 项全部通过、0 项跳过，其中真实摔落与真实坡度 E2E 各 1 项并均实际执行。结构化预检记录
+renderer 为 `llvmpipe (LLVM 20.1.2, 256 bits)`、vendor 为 `Mesa`；Warp 使用 CPU，CUDA
+被隐藏且结果记录 `cuda_used=false`。两个视频均通过 H.264、`yuv420p`、640×360、50 FPS
+及工件/校验和检查。精确数量对应这次最终工作树；后续新增协议测试时，应以“当前模块全部
+通过且两项真实 E2E 均未跳过”为验收条件，而不能沿用旧数量。这只证明本地 CPU/Mesa 开发
+链路，不代表远程服务器或正式 GPU 物理试验已经验收。
 
 本次实现没有修改 `.wslconfig`，也没有执行 `wsl --shutdown`。在 WSL 安装依赖前，仍需按
 路线图单独维护并验证 WSL NAT、DNS 和 HTTPS 下载；这个操作会停止 WSL 中的现有进程，不能
@@ -96,8 +131,9 @@ Windows 127.0.0.1
     → 只读结果服务
 ```
 
-远程部署需要先让锁定环境中的 `newton-test-remote` 固定入口对非交互 SSH 会话可见。浏览
-窗口不使用 GPU；关闭这个窗口只会关闭结果访问，不会停止另一个窗口中正在执行的试验。
+远程部署需要先让锁定环境中的 `newton-test-remote` 固定入口对非交互 SSH 会话可见。只读
+结果服务不会启动 GPU 物理仿真；本地浏览器播放视频时可能使用本机图形加速。关闭这个窗口
+只会关闭结果访问，不会停止另一个窗口中正在执行的试验。
 
 ## 4. 底层命令参考
 

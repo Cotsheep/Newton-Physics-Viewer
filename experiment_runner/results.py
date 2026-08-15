@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ RUN_STATUSES = {
 }
 TEMPLATES = {"drop", "slope_friction"}
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MISSING = object()
 
 
 def utc_now() -> str:
@@ -125,6 +127,9 @@ def create_run_scaffold(
     if template not in TEMPLATES:
         raise ValueError(f"Unknown experiment template: {template}")
     git_commit = require_git_commit(git_commit)
+    authoritative = profile.get("authoritative")
+    if not isinstance(authoritative, bool):
+        raise ValueError("Run profile must declare a boolean authoritative value")
     run_directory = data_root.resolve_managed("runs", run_id)
     run_directory.mkdir(parents=False, exist_ok=False)
     (run_directory / "cases").mkdir()
@@ -138,6 +143,7 @@ def create_run_scaffold(
             "template": template,
             "asset": asset,
             "profile": profile,
+            "authoritative": authoritative,
             "git_commit": git_commit,
             "environment": collect_runtime_environment(profile),
             "created_at": created_at,
@@ -154,6 +160,7 @@ def create_run_scaffold(
             "schema_version": RESULT_SCHEMA_VERSION,
             "run_id": run_id,
             "status": "created",
+            "authoritative": authoritative,
             "phase": "created",
             "progress": "Waiting to start",
             "current_case": None,
@@ -184,10 +191,17 @@ def update_run_status(
     if status not in RUN_STATUSES:
         raise ValueError(f"Unknown run status: {status}")
     manifest = read_json(run_directory / "manifest.json")
+    authoritative = manifest.get("authoritative")
+    if not isinstance(authoritative, bool):
+        profile = manifest.get("profile")
+        authoritative = profile.get("authoritative") if isinstance(profile, dict) else None
+    if not isinstance(authoritative, bool):
+        raise ValueError("Run manifest must declare a boolean authoritative value")
     document = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "run_id": manifest["run_id"],
         "status": status,
+        "authoritative": authoritative,
         "phase": phase,
         "progress": progress,
         "current_case": current_case,
@@ -210,6 +224,42 @@ def _safe_document(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _safe_public_value(value: Any) -> Any:
+    """Remove non-JSON-safe numeric values before publishing browser data."""
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _MISSING
+    if isinstance(value, list):
+        items = [_safe_public_value(item) for item in value]
+        return _MISSING if any(item is _MISSING for item in items) else items
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            safe_item = _safe_public_value(item)
+            if safe_item is not _MISSING:
+                result[key] = safe_item
+        return result
+    return _MISSING
+
+
+def _copy_safe_public_value(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    key: str,
+) -> None:
+    if key not in source:
+        return
+    value = _safe_public_value(source[key])
+    if value is not _MISSING:
+        target[key] = value
+
+
 def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
     document = _safe_document(case_directory / "case.json")
     if document is None:
@@ -217,17 +267,18 @@ def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
     case_id = document.get("case_id", case_directory.name)
     if not isinstance(case_id, str):
         return None
+    condition = _safe_public_value(document.get("condition", {}))
     public: dict[str, Any] = {
         "case_id": case_id,
         "directory": case_directory.name,
         "label": document.get("label", case_id),
         "status": document.get("status", "unknown"),
-        "condition": document.get("condition", {}),
-        "duration_seconds": document.get("duration_seconds"),
+        "condition": condition if isinstance(condition, dict) else {},
         "started_at": document.get("started_at"),
         "finished_at": document.get("finished_at"),
-        "authoritative": document.get("authoritative"),
     }
+    _copy_safe_public_value(public, document, "duration_seconds")
+    _copy_safe_public_value(public, document, "authoritative")
     if isinstance(document.get("development_outcome"), str):
         public["development_outcome"] = document["development_outcome"]
     for key in (
@@ -240,8 +291,7 @@ def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
         "finite",
         "physics_steps",
     ):
-        if key in document:
-            public[key] = document[key]
+        _copy_safe_public_value(public, document, key)
     base_url = f"/runs/{run_id}/cases/{case_directory.name}"
     for key, filename in {
         "video_url": "video.mp4",
@@ -279,7 +329,9 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
                 cases.append(public_case)
 
     profile = manifest.get("profile")
-    authoritative = profile.get("authoritative") if isinstance(profile, dict) else None
+    authoritative = manifest.get("authoritative")
+    if not isinstance(authoritative, bool):
+        authoritative = profile.get("authoritative") if isinstance(profile, dict) else None
     public = {
         "run_id": run_id,
         "batch_id": manifest.get("batch_id"),

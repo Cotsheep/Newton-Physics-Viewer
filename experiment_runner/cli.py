@@ -151,6 +151,8 @@ def _command_smoke_drop(args: argparse.Namespace) -> int:
         git_commit=args.git_commit,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("物理解算使用 MuJoCo/Warp CPU，不使用 CUDA。")
+    print("Windows 录像可能使用本机图形 GPU；Linux 录像必须验证为 Mesa 软件 OpenGL。")
     print("注意：这是 CPU 冒烟结果，不是正式 GPU 物理试验结论。")
     return 0
 
@@ -165,6 +167,8 @@ def _command_smoke_slope(args: argparse.Namespace) -> int:
         git_commit=args.git_commit,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("物理解算使用 MuJoCo/Warp CPU，不使用 CUDA。")
+    print("Windows 录像可能使用本机图形 GPU；Linux 录像必须验证为 Mesa 软件 OpenGL。")
     print("注意：这是固定 25°、CPU、单案例的非正式冒烟观察，不是正式摩擦结论。")
     return 0
 

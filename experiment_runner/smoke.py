@@ -7,6 +7,7 @@ from .assets import snapshot_asset_version, utc_now
 from .cpu_safety import prepare_cpu_smoke_environment
 from .profiles import get_profile
 from .provenance import resolve_git_commit
+from .slope_policy import single_body_slope_smoke_error
 from .results import (
     build_result_index,
     create_batch_scaffold,
@@ -25,6 +26,15 @@ from .web import install_static_site
 
 SMOKE_PROFILE = "mujoco-cpu-wsl-smoke-v1"
 SLOPE_SMOKE_ANGLE_DEGREES = 25.0
+
+
+def _require_single_body_slope_smoke(readiness: dict[str, Any]) -> None:
+    """Apply the current local-smoke policy without changing generic readiness."""
+
+    checks = readiness.get("checks")
+    rigid_body_count = checks.get("rigid_body_count") if isinstance(checks, dict) else None
+    if type(rigid_body_count) is not int or rigid_body_count != 1:
+        raise ValueError(single_body_slope_smoke_error(rigid_body_count))
 
 
 def _update_manifest(run_directory: Path, **values: Any) -> dict[str, Any]:
@@ -59,6 +69,14 @@ def _update_batch_status(
 def _append_run_log(run_directory: Path, message: str) -> None:
     with (run_directory / "run.log").open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(f"{utc_now()} {message}\n")
+
+
+def _rendering_log_message(rendering: dict[str, Any]) -> str:
+    return (
+        "Viewer rendering initialized; "
+        f"device={rendering['device']}; renderer={rendering['renderer']}; "
+        f"vendor={rendering['vendor']}"
+    )
 
 
 def run_cpu_smoke_drop(
@@ -130,7 +148,8 @@ def run_cpu_smoke_drop(
     case_directory.mkdir()
     atomic_write_text(
         run_directory / "run.log",
-        f"{utc_now()} CPU smoke run created; Warp CPU and software-rendering policy enabled\n",
+        f"{utc_now()} CPU smoke run created; MuJoCo/Warp physics locked to CPU; "
+        "CUDA hidden; rendering device pending Viewer initialization\n",
     )
     started_at = utc_now()
     case_document: dict[str, Any] = {
@@ -182,6 +201,7 @@ def run_cpu_smoke_drop(
             output_directory=case_directory,
             duration_seconds=duration,
         )
+        _append_run_log(run_directory, _rendering_log_message(result["rendering"]))
         finished_at = utc_now()
         case_document.update(result)
         case_document["status"] = "succeeded"
@@ -246,14 +266,24 @@ def run_cpu_smoke_drop(
             "authoritative": False,
             "profile": profile.name,
         }
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         failed_at = utc_now()
-        safe_failure = f"CPU smoke drop failed ({type(exc).__name__})"
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        terminal_status = "interrupted" if interrupted else "failed"
+        safe_failure = (
+            "CPU smoke drop interrupted (KeyboardInterrupt)"
+            if interrupted
+            else f"CPU smoke drop failed ({type(exc).__name__})"
+        )
         _append_run_log(run_directory, safe_failure)
-        case_document["status"] = "failed"
+        case_document["status"] = terminal_status
         case_document["finished_at"] = failed_at
         case_document["failure"] = {
-            "code": "cpu_smoke_drop_failed",
+            "code": (
+                "cpu_smoke_drop_interrupted"
+                if interrupted
+                else "cpu_smoke_drop_failed"
+            ),
             "message": safe_failure,
         }
         atomic_write_json(case_directory / "case.json", case_document)
@@ -265,14 +295,18 @@ def run_cpu_smoke_drop(
                 "cases/001-medium/case.json",
                 "checksums.sha256",
             ],
-            exit_code=1,
+            exit_code=130 if interrupted else 1,
             failure_summary=safe_failure,
         )
         update_run_status(
             run_directory,
-            status="failed",
-            phase="failed",
-            progress="The CPU smoke case failed",
+            status=terminal_status,
+            phase=terminal_status,
+            progress=(
+                "The CPU smoke case was interrupted"
+                if interrupted
+                else "The CPU smoke case failed"
+            ),
             current_case=None,
             completed_cases=0,
             total_cases=1,
@@ -288,7 +322,7 @@ def run_cpu_smoke_drop(
             data_root,
             batch_id=batch_id,
             run_id=run_id,
-            status="failed",
+            status=terminal_status,
         )
         install_static_site(data_root)
         build_result_index(data_root)
@@ -319,6 +353,7 @@ def run_cpu_smoke_slope(
     if readiness["status"] != "ready":
         reasons = ", ".join(readiness["reason_codes"]) or "unknown"
         raise ValueError(f"Asset version is not ready for slope_friction: {reasons}")
+    _require_single_body_slope_smoke(readiness)
 
     profile = get_profile(SMOKE_PROFILE)
     duration = profile.case_duration_seconds
@@ -362,7 +397,8 @@ def run_cpu_smoke_slope(
     atomic_write_text(
         run_directory / "run.log",
         f"{utc_now()} CPU slope smoke run created; fixed 25-degree single case; "
-        "Warp CPU and software-rendering policy enabled\n",
+        "MuJoCo/Warp physics locked to CPU; CUDA hidden; "
+        "rendering device pending Viewer initialization\n",
     )
     started_at = utc_now()
     case_document: dict[str, Any] = {
@@ -421,6 +457,7 @@ def run_cpu_smoke_slope(
             output_directory=case_directory,
             duration_seconds=duration,
         )
+        _append_run_log(run_directory, _rendering_log_message(result["rendering"]))
         finished_at = utc_now()
         case_document.update(result)
         case_document["status"] = "succeeded"

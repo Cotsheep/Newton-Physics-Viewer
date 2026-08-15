@@ -12,7 +12,7 @@ import warp as wp
 
 from asset_viewer.camera import AssetBounds, frame_camera_on_bounds
 
-from ..cpu_safety import require_software_opengl_renderer
+from ..cpu_safety import CpuSmokeEnvironmentUnavailable, require_software_opengl_renderer
 from ..profiles import ExperimentProfile
 from ..video import H264VideoWriter, atomic_write_jpeg
 
@@ -84,7 +84,11 @@ def _headless_viewer(
         renderer, vendor = _opengl_identity()
         software_required = os.environ.get("NEWTON_TEST_REQUIRE_SOFTWARE_OPENGL") == "1"
         if software_required:
-            renderer = require_software_opengl_renderer(renderer)
+            try:
+                renderer = require_software_opengl_renderer(renderer)
+            except CpuSmokeEnvironmentUnavailable as exc:
+                exc.vendor = vendor
+                raise
         return viewer, {
             "device": "software-cpu" if software_required else "system-opengl",
             "renderer": renderer,

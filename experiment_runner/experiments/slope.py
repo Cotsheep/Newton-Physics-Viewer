@@ -13,6 +13,7 @@ from asset_viewer.app import build_model
 from asset_viewer.camera import AssetBounds, compute_asset_bounds
 
 from ..profiles import ExperimentProfile
+from ..slope_policy import single_body_slope_smoke_error
 from .drop import _viewer_arguments, mujoco_usd_schema_resolvers
 from .recording import configure_warp_cpu_only, record_simulation_video
 
@@ -242,8 +243,8 @@ def create_slope_scene(
         )
     except ImportError as exc:
         raise RuntimeError("USD import requires OpenUSD Python bindings (the 'pxr' module)") from exc
-    if builder.body_count <= 0:
-        raise ValueError("Slope smoke requires at least one imported rigid body")
+    if type(builder.body_count) is not int or builder.body_count != 1:
+        raise ValueError(single_body_slope_smoke_error(builder.body_count))
 
     priority_attribute = builder.custom_attributes.get("mujoco:geom_priority")
     if priority_attribute is None:

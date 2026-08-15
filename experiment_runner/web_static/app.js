@@ -21,6 +21,8 @@ const DEVELOPMENT_OUTCOME_LABELS = {
   stayed_near_start: "观察：保持在起点附近",
   inconclusive: "观察：结果不明确",
 };
+const NON_AUTHORITATIVE_TITLE = "非正式开发冒烟";
+const NON_AUTHORITATIVE_BOUNDARY = "不能作为正式物理结论";
 
 let resultIndex = null;
 let refreshTimer = null;
@@ -40,6 +42,70 @@ function formatTime(value) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatFiniteNumber(value, fractionDigits = 3) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "未记录";
+  return value.toFixed(fractionDigits);
+}
+
+function formatMetric(value, unit, fractionDigits = 3) {
+  const formatted = formatFiniteNumber(value, fractionDigits);
+  return formatted === "未记录" ? formatted : `${formatted} ${unit}`;
+}
+
+function formatVector(value, unit) {
+  if (
+    !Array.isArray(value)
+    || value.length !== 3
+    || value.some((item) => typeof item !== "number" || !Number.isFinite(item))
+  ) {
+    return "未记录";
+  }
+  return `[${value.map((item) => item.toFixed(3)).join(", ")}] ${unit}`;
+}
+
+function formatFiniteState(value) {
+  if (value === true) return "全部有限";
+  if (value === false) return "检测到非有限值";
+  return "未记录";
+}
+
+function formatConditionValue(value) {
+  if (typeof value === "number") return formatFiniteNumber(value);
+  if (Array.isArray(value)) {
+    const formatted = value.map(formatConditionValue);
+    return formatted.includes("未记录") ? "未记录" : formatted.join(", ");
+  }
+  if (value === null || value === undefined || value === "") return "未记录";
+  return String(value);
+}
+
+function nonAuthoritativeNotice() {
+  const notice = element("aside", "smoke-notice");
+  notice.append(
+    element("strong", "", NON_AUTHORITATIVE_TITLE),
+    element("span", "", NON_AUTHORITATIVE_BOUNDARY),
+  );
+  return notice;
+}
+
+function slopeMetrics(testCase) {
+  const metrics = element("dl", "metric-list");
+  const rows = [
+    ["坡度", formatMetric(testCase.slope_angle_degrees, "°", 1)],
+    ["沿坡位移", formatMetric(testCase.displacement_along_slope, "m")],
+    [
+      "开发观察",
+      DEVELOPMENT_OUTCOME_LABELS[testCase.development_outcome] || "未记录",
+    ],
+    ["最终线速度", formatVector(testCase.final_linear_velocity, "m/s")],
+    ["有限性", formatFiniteState(testCase.finite)],
+  ];
+  rows.forEach(([label, value]) => {
+    metrics.append(element("dt", "", label), element("dd", "", value));
+  });
+  return metrics;
 }
 
 function shortHash(value) {
@@ -148,7 +214,9 @@ function renderHome() {
 
 function describeCondition(condition) {
   if (!condition || typeof condition !== "object") return "工况参数未记录";
-  const pairs = Object.entries(condition).map(([key, value]) => `${key}: ${value}`);
+  const pairs = Object.entries(condition).map(
+    ([key, value]) => `${key}: ${formatConditionValue(value)}`,
+  );
   return pairs.length ? pairs.join(" · ") : "工况参数未记录";
 }
 
@@ -178,9 +246,12 @@ function caseCard(asset, run, testCase) {
     element("h3", "", testCase.label || testCase.case_id),
     element("p", "", describeCondition(testCase.condition)),
   );
+  const nonAuthoritative = testCase.authoritative === false || run.authoritative === false;
+  if (nonAuthoritative) copy.append(nonAuthoritativeNotice());
+  if (run.template === "slope_friction") copy.append(slopeMetrics(testCase));
   const tags = element("div", "tag-row");
   tags.append(statusBadge(testCase.status));
-  if (testCase.authoritative === false) {
+  if (nonAuthoritative) {
     tags.append(element("span", "tag", "非正式开发冒烟"));
   }
   if (DEVELOPMENT_OUTCOME_LABELS[testCase.development_outcome]) {
@@ -312,6 +383,10 @@ function renderPlayer(runId, caseId) {
     element("h1", "", testCase.label || testCase.case_id),
     element("p", "page-description", describeCondition(testCase.condition)),
   );
+  if (testCase.authoritative === false || run.authoritative === false) {
+    details.append(nonAuthoritativeNotice());
+  }
+  if (run.template === "slope_friction") details.append(slopeMetrics(testCase));
   const facts = element("dl");
   [
     ["资产", asset.identity],
