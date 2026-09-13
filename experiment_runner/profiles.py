@@ -21,7 +21,10 @@ class ExperimentProfile:
     preview_width: int
     preview_height: int
     preview_interval_seconds: float
+    execution_tier: str
+    recording_mode: str
     case_duration_seconds: float | None = None
+    wall_time_limit_seconds: float | None = None
 
     @property
     def physics_steps_per_video_frame(self) -> int:
@@ -38,6 +41,11 @@ class ExperimentProfile:
         result["video_codec"] = "h264"
         result["video_pixel_format"] = "yuv420p"
         result["video_crf"] = 18
+        result["solver"] = "newton.solvers.SolverMuJoCo"
+        result["compute_backend"] = (
+            "mujoco-cpu" if self.use_mujoco_cpu else "mujoco-warp-cuda"
+        )
+        result["cpu_fallback_allowed"] = False
         return result
 
 
@@ -55,6 +63,8 @@ _PROFILE_VALUES = {
         preview_width=640,
         preview_height=360,
         preview_interval_seconds=1.0,
+        execution_tier="formal_reserved",
+        recording_mode="required",
     ),
     "mujoco-cpu-wsl-smoke-v1": ExperimentProfile(
         name="mujoco-cpu-wsl-smoke-v1",
@@ -69,7 +79,27 @@ _PROFILE_VALUES = {
         preview_width=320,
         preview_height=180,
         preview_interval_seconds=1.0,
+        execution_tier="development_smoke",
+        recording_mode="required",
         case_duration_seconds=2.0,
+    ),
+    "mujoco-warp-cuda-dt1ms-integration-smoke-v1": ExperimentProfile(
+        name="mujoco-warp-cuda-dt1ms-integration-smoke-v1",
+        authoritative=False,
+        use_mujoco_cpu=False,
+        use_mujoco_contacts=True,
+        iterations=10,
+        physics_dt=0.001,
+        video_fps=50,
+        video_width=640,
+        video_height=360,
+        preview_width=320,
+        preview_height=180,
+        preview_interval_seconds=1.0,
+        execution_tier="development_integration_smoke",
+        recording_mode="disabled_until_gpu_headless_rendering_is_validated",
+        case_duration_seconds=1.0,
+        wall_time_limit_seconds=300.0,
     ),
 }
 
@@ -98,6 +128,17 @@ _PROFILE_AVAILABILITY = MappingProxyType(
             "message": (
                 "Available only for one non-authoritative MuJoCo CPU medium-height "
                 "drop smoke case and one fixed 25-degree slope smoke case."
+            ),
+        },
+        "mujoco-warp-cuda-dt1ms-integration-smoke-v1": {
+            "status": "development_integration_smoke_only",
+            "runnable": True,
+            "entrypoint": "smoke-drop-gpu",
+            "entrypoints": ("smoke-drop-gpu",),
+            "message": (
+                "Available only after the fail-closed Determined single-trial GPU gate for "
+                "one bounded, non-authoritative medium-height drop integration smoke. "
+                "GPU headless recording is not yet enabled."
             ),
         },
     }

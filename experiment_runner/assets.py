@@ -17,7 +17,7 @@ from .storage import DataRoot, atomic_write_json
 
 
 ASSET_ENTRYPOINT = "newton-mujoco.usda"
-CHECKER_VERSION = "asset-readiness-v1"
+CHECKER_VERSION = "asset-readiness-v2"
 _VERSION_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
 
@@ -433,7 +433,7 @@ def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
         "authored": len(friction_values),
         "unique_values": len(unique_frictions),
     }
-    if not friction_values:
+    if len(friction_values) != len(physics_materials) or not friction_values:
         slope_reasons.append("missing_required_physics_attribute")
     elif (
         not all(_valid_nonnegative_scalar(value) for value in friction_values)
@@ -446,7 +446,7 @@ def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
     }.items():
         values = _authored_values(physics_materials, name)
         slope_checks[name] = {"authored": len(values)}
-        if not values:
+        if len(values) != len(physics_materials) or not values:
             slope_reasons.append("missing_required_physics_attribute")
         elif not all(validator(value) for value in values):
             slope_reasons.append("invalid_required_physics_attribute")

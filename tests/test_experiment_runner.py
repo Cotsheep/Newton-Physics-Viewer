@@ -819,7 +819,7 @@ class ControllerTests(unittest.TestCase):
         process = mock.Mock()
         process.poll.return_value = None
         process.wait.return_value = 143
-        with mock.patch("experiment_runner.controller.shutil.which", return_value="ssh.exe"):
+        with mock.patch("experiment_runner.controller.check_remote_results_ready"), mock.patch("experiment_runner.controller.shutil.which", return_value="ssh.exe"):
             with mock.patch("experiment_runner.controller.subprocess.Popen", return_value=process):
                 with mock.patch(
                     "experiment_runner.controller._wait_for_local_port",

@@ -204,8 +204,8 @@ def create_result_server(
     host: str = "127.0.0.1",
     port: int = 8765,
 ) -> ThreadingHTTPServer:
-    if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("The result server may bind only to a loopback address")
+    if host != "127.0.0.1":
+        raise ValueError("The result server may bind only to loopback 127.0.0.1")
     if not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     data_root.require_initialized()

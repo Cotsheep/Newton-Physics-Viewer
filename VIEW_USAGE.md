@@ -10,6 +10,9 @@ Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则�
 原生 MuJoCo contacts，物理解算不使用 CUDA。Windows 冒烟录像使用系统 OpenGL，
 可能使用本机图形 GPU；Linux 冒烟只允许经过验证的 Mesa 软件 OpenGL。图形渲染设备不改变冒烟的
 非正式 CPU 物理边界。二者结果不能直接比较，坡度冒烟也不产生正式摩擦结论。
+服务器侧另有一个不出现在 Viewer 或普通菜单中的 `smoke-drop-gpu` development/integration
+入口。它只在 Determined 分配的单 GPU trial 中使用 Newton `SolverMuJoCo` 的 MJWarp/CUDA
+路径推进一个固定短工况，不提供交互，也不与 Viewer 结果比较；当前尚未在目标 GPU 集群验证。
 
 ## 代码目录
 

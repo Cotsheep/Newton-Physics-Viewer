@@ -28,7 +28,7 @@ newton-test-control = "experiment_runner.controller:main"
 newton-test-remote = "experiment_runner.cli:main"
 
 [dependency-groups]
-dev = []
+dev = ["pyyaml==6.0.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["asset_viewer", "experiment_runner"]

@@ -1,6 +1,6 @@
 # 本地 CPU 冒烟与结果页使用说明
 
-状态：本地摔落与固定坡度两条 CPU 冒烟链路可运行
+状态：本地摔落与固定坡度两条 CPU 冒烟链路可运行；独立 GPU integration smoke 已实现但未在目标集群运行
 适用范围：开发验证，不是正式 GPU 资产物理结论
 
 这条链路已经能够完成：
@@ -15,6 +15,10 @@
 
 正式 GPU 配置 `mujoco-native-dt1ms-v1` 已登记，但正式 GPU 批次仍保持关闭。只有管理员提供
 不可由个人账号修改的 GPU 授权策略，并完成远程集成验收后，才会开放正式运行。
+
+独立的 `mujoco-warp-cuda-dt1ms-integration-smoke-v1` 不属于正式配置。它只允许在
+Determined 分配单 GPU 的 trial 中执行一个 1 秒中等高度摔落，始终
+`authoritative=false`，不能用于开放或替代 `mujoco-native-dt1ms-v1`。
 
 ## 1. 当前 Windows 环境快速验证
 
@@ -149,7 +153,31 @@ uv run newton-test-remote smoke-slope <asset-identity> <full-asset-version> --da
 uv run newton-test local-results <data-root>
 ```
 
-## 5. 当前尚未开放
+GPU 命令不属于上述本地用法。它只能由 Determined trial 使用预制 Python 直接调用，不能
+在 GPU 分配后通过 `uv run` 安装环境；具体命令和源码导出见[部署说明](../deployment/README.md)。
+
+## 5. GPU integration smoke 的当前边界
+
+实现和验证状态必须分开：
+
+- 已实现：独立非正式 profile、`smoke-drop-gpu` CLI、恰好一块可见 GPU 的 fail-closed
+  校验、容器逻辑 `cuda:0` 选择、1 秒/单工况/300 秒内部上限、审计元数据和结构化结果；
+- 已在 Windows 本地用 mock/CPU 验证：零卡、多卡、单卡选择、CUDA 初始化失败不回退、CPU
+  仍隐藏 CUDA、profile/CLI、metadata unknown、1000 步 worker 与结果协议；
+- 历史文档记载过 Determined 非仿真环境探针，但本交付没有可复核的目标运行产物；
+  仓库无法证明当前版本在服务器上已验收，旧探针中的系统 Python 3.10.12 也不满足项目要求；
+- 尚未验证：在目标 trial 中用 Newton/MJWarp 推进 GPU 物理、GPU 无头 OpenGL/EGL 录像、
+  正式 GPU 物理试验、多高度正式摔落和正式坡度实验。
+
+GPU 冒烟不调用 CPU safety 路径，不隐藏 CUDA，也不修改全局设备可见性。反过来，现有 CPU
+入口仍在导入仿真栈前设置 `CUDA_VISIBLE_DEVICES=-1`，Linux 继续要求 Mesa 软件 OpenGL。
+
+当前 GPU 容器渲染能力未知，所以 GPU 冒烟不尝试录像。成功结果复用 manifest、status、
+case、run.log 和 checksums 结构，明确写入 `gpu_headless_recording_not_validated`；没有真实
+preview、poster、final 或 MP4 时不会创建这些文件。Determined 人工示例见
+[`../deployment/README.md`](../deployment/README.md)。
+
+## 6. 当前尚未开放
 
 - 正式 GPU 批次；
 - 多高度正式摔落；

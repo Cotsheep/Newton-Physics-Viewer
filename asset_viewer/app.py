@@ -340,6 +340,9 @@ class AssetBrowser:
     def request_asset(self, asset_path: Path) -> int:
         """Add a selected supported asset to the browser, if needed, and request it."""
         candidate = Path(asset_path).expanduser()
+        from experiment_runner.config import load_controller_config
+        from experiment_runner.paths import require_viewer_source
+        require_viewer_source(candidate, load_controller_config().data_root)
         if candidate.suffix.lower() not in SUPPORTED_ASSET_SUFFIXES:
             suffixes = ", ".join(sorted(SUPPORTED_ASSET_SUFFIXES))
             raise ValueError(f"Expected a supported asset file ({suffixes}), got: {candidate}")
@@ -792,6 +795,9 @@ def run_viewer(
     args: argparse.Namespace,
     urdfs: list[Path],
 ) -> None:
+    from experiment_runner.config import load_controller_config
+    from experiment_runner.paths import require_viewer_source
+    require_viewer_source(args.source, load_controller_config().data_root)
     initial_position = 0
     resolved_source = args.source.expanduser().resolve(strict=False)
     source_root = resolved_source if resolved_source.is_dir() else resolved_source.parent

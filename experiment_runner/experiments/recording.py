@@ -14,6 +14,7 @@ from asset_viewer.camera import AssetBounds, frame_camera_on_bounds
 
 from ..cpu_safety import CpuSmokeEnvironmentUnavailable, require_software_opengl_renderer
 from ..profiles import ExperimentProfile
+from ..gpu_safety import GpuExecutionPermit, require_gpu_execution_permit, require_cpu_smoke_profile
 from ..video import H264VideoWriter, atomic_write_jpeg
 
 
@@ -39,6 +40,27 @@ def configure_warp_cpu_only() -> None:
     device = wp.get_device()
     if not bool(getattr(device, "is_cpu", False)):
         raise RuntimeError("CPU smoke could not lock Warp to the CPU device")
+
+
+def configure_warp_for_profile(
+    profile: ExperimentProfile, *, gpu_permit: GpuExecutionPermit | None = None,
+) -> str:
+    """Configure the profile device without ever selecting an implicit fallback."""
+
+    if profile.use_mujoco_cpu:
+        require_cpu_smoke_profile(profile)
+        configure_warp_cpu_only()
+        return "cpu"
+    require_gpu_execution_permit(gpu_permit, profile)
+    wp.set_device("cuda:0")
+    device = wp.get_device()
+    if (
+        not bool(getattr(device, "is_cuda", False))
+        or str(getattr(device, "alias", "")) != "cuda:0"
+        or getattr(device, "ordinal", None) != 0
+    ):
+        raise RuntimeError("GPU profile could not lock Warp to logical cuda:0")
+    return "cuda:0"
 
 
 def recording_frame_counts(
@@ -74,7 +96,9 @@ def _opengl_identity() -> tuple[str, str]:
 def _headless_viewer(
     profile: ExperimentProfile,
 ) -> tuple[newton.viewer.ViewerGL, dict[str, str]]:
-    viewer = CpuOnlyViewerGL(
+    require_cpu_smoke_profile(profile)
+    viewer_class = CpuOnlyViewerGL
+    viewer = viewer_class(
         width=profile.video_width,
         height=profile.video_height,
         headless=True,
@@ -122,13 +146,14 @@ def record_simulation_video(
 ) -> dict[str, Any]:
     """Record the shared hold/step/render/encode lifecycle for one CPU case."""
 
+    require_cpu_smoke_profile(profile)
     total_frames, hold_frames, simulation_frames = recording_frame_counts(
         duration_seconds=duration_seconds,
         initial_hold_seconds=initial_hold_seconds,
         fps=profile.video_fps,
     )
     output_directory.mkdir(parents=True, exist_ok=True)
-    configure_warp_cpu_only()
+    configure_warp_for_profile(profile)
     viewer, rendering = _headless_viewer(profile)
     preview_every = max(1, round(profile.preview_interval_seconds * profile.video_fps))
     try:

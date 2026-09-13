@@ -13,6 +13,7 @@ from asset_viewer.app import build_model
 from asset_viewer.camera import AssetBounds, compute_asset_bounds
 
 from ..profiles import ExperimentProfile
+from ..gpu_safety import require_cpu_smoke_profile
 from ..slope_policy import single_body_slope_smoke_error
 from .drop import _viewer_arguments, mujoco_usd_schema_resolvers
 from .recording import configure_warp_cpu_only, record_simulation_video
@@ -179,6 +180,7 @@ def measure_slope_geometry(
     profile: ExperimentProfile,
     angle_degrees: float = SLOPE_ANGLE_DEGREES,
 ) -> SlopeGeometry:
+    require_cpu_smoke_profile(profile)
     configure_warp_cpu_only()
     arguments = _viewer_arguments(
         asset_path,
@@ -226,6 +228,7 @@ def create_slope_scene(
 ) -> SlopeScene:
     """Create one native-contact MuJoCo CPU scene on a fixed finite ramp."""
 
+    require_cpu_smoke_profile(profile)
     configure_warp_cpu_only()
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
     try:
@@ -313,6 +316,7 @@ def create_slope_scene(
 
 
 def step_slope_scene(scene: SlopeScene, profile: ExperimentProfile) -> None:
+    require_cpu_smoke_profile(profile)
     scene.state.clear_forces()
     scene.solver.step(
         scene.state,
@@ -383,6 +387,7 @@ def record_slope_case(
     duration_seconds: float,
     initial_hold_seconds: float = INITIAL_HOLD_SECONDS,
 ) -> dict[str, Any]:
+    require_cpu_smoke_profile(profile)
     initial_scene_bounds = compute_asset_bounds(scene.model, scene.state)
     recording = record_simulation_video(
         scene,

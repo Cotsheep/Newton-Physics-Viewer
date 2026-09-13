@@ -132,6 +132,8 @@ class DataRoot:
             raise ValueError("The user home directory itself cannot be used as NEWTON_DATA_ROOT")
 
         boundaries = list(separate_from)
+        from .paths import source_root as project_source_root
+        boundaries.append(project_source_root())
         if source_root is not None:
             boundaries.append(source_root)
         for boundary in boundaries:
@@ -154,9 +156,13 @@ class DataRoot:
                     f"NEWTON_DATA_ROOT contains unrelated existing entries: {names}{suffix}"
                 )
         for relative in LAYOUT.values():
-            target = root / relative
-            if target.exists() and target.is_symlink():
-                raise ValueError(f"Managed data directory cannot be a symbolic link: {relative}")
+            target = root
+            for part in relative.parts:
+                target = target / part
+                if target.is_symlink() or target.is_junction():
+                    raise ValueError(f"Managed data directory cannot be a symbolic link: {relative}")
+                if not target.resolve().is_relative_to(root):
+                    raise ValueError(f"Managed data directory escapes its root: {relative}")
 
     def require_existing_owned_directory(self) -> None:
         """Require an administrator-prepared target before server configuration writes."""
@@ -205,6 +211,8 @@ class DataRoot:
         """Resolve a child path and prove that it stays within its managed directory."""
 
         base = self.location(name).resolve(strict=False)
+        if not base.is_relative_to(self.path):
+            raise ValueError("Managed directory escapes NEWTON_DATA_ROOT")
         candidate = base.joinpath(*relative_parts).resolve(strict=False)
         if not _is_relative_to(candidate, base):
             raise ValueError(f"Path escapes managed data directory {name!r}")

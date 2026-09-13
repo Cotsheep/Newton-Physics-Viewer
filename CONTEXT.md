@@ -119,6 +119,12 @@ _Avoid_: 任意参数组合、零散求解器参数
 可能使用本机图形 GPU，Linux 录像则必须验证为 Mesa 软件 OpenGL。
 _Avoid_: 正式试验运行、GPU 验收、资产物理结论、可比较基准
 
+**GPU 集成冒烟运行**:
+由 Determined experiment 分配恰好一个 GPU 后，在 trial 容器内用 Newton `SolverMuJoCo`、
+MJWarp/CUDA 和 MuJoCo 原生接触执行的单个受限时中等高度摔落开发检查。它只验证 GPU 执行
+与结构化结果链路，始终 `authoritative=false`，不由 Newton-Test 自行提交 experiment。
+_Avoid_: 正式 GPU 试验、宿主机 GPU 编号选择、多高度批次、坡度批次、参数扫描、物理结论
+
 **运行结果**:
 一次 **试验运行** 留下的日志、运行中预览、结果录像、最终截图和运行清单。
 _Avoid_: 仅指最终截图、仅指判定结果
@@ -200,6 +206,10 @@ _Avoid_: 成功、全部失败、资产部分合格
 - 一个 **试验运行**只对应一个 **任务模板**
 - 一个 **试验运行** 使用恰好一个 **运行配置**
 - **本地冒烟运行**使用独立命名配置并显式标记为非正式，不能与远程正式试验直接比较
+- **GPU 集成冒烟运行**使用独立命名配置，必须先通过 Determined trial/allocation/slot 与
+  单个 NVIDIA GPU UUID 的防误用安全门，再只选择 trial 内的逻辑 `cuda:0`；环境变量不是
+  不可伪造的认证，实际隔离由 Determined/NVIDIA runtime 提供；该运行不能调用或开放正式
+  GPU profile
 - 一个 **试验运行** 针对恰好一个 **试验资产**
 - **资产待导入区**中的完整资产包只有通过 **资产验收入库**，才成为可选择的
   **试验资产**
@@ -303,9 +313,9 @@ _Avoid_: 成功、全部失败、资产部分合格
   代码先在操作者本地 WSL 中验证，再进入远程 NVIDIA GPU 验收。
 - 远程进程托管方式不能凭“服务器”或“集群”名称推断：受管理集群遵守 Slurm/PBS 等既有
   调度器；只有管理员确认是独立 GPU 服务器后，才考虑个人 systemd user service 与 linger。
-- 当前目标服务器已确认为没有调度器或 systemd 的 Docker 实例；第一阶段试验在普通 SSH
-  控制连接中执行，不使用后台守护方案。控制端失联时允许当前工况完整收尾，但没有
-  **工况续行确认**就不能启动下一个工况。
+- 早期直接容器探针曾把目标环境理解为没有调度器的 Docker 实例；当前已确认 GPU 任务由
+  Determined 0.38.1 调度并且必须作为 experiment 提交。Newton-Test 的 GPU integration
+  smoke 只负责 trial 内前台执行，不实现提交器，也不使用后台守护方案。
 - 正式本地控制端从 Windows CMD 运行并调用现有 `ssh.exe`；Windows 用户自己的 SSH 别名
   保存连接信息。仓库和 WSL 不复制私钥，也不保存真实服务器地址或用户名。
 - 正式本地控制端采用交互式向导生成并保存可复用的 **运行请求**；操作者查看完整摘要并
@@ -329,6 +339,26 @@ _Avoid_: 成功、全部失败、资产部分合格
   改选另一块获授权设备。
 - GPU 空闲检查不构成授权；首版默认独占且不排队，管理员明确提供共享规则之前不能启用
   共享模式。
+- Determined 的 `slots_per_trial: 1` 表示调度器分配一块 GPU。GPU integration smoke 要求
+  `DET_EXPERIMENT_ID`、`DET_TRIAL_ID`、`DET_TASK_ID`、`DET_ALLOCATION_ID`、单项
+  `DET_SLOT_IDS`（恰好一个非负整数，拒绝字符串和 bool）和 `DET_TASK_TYPE=TRIAL` 完整，且 `NVIDIA_VISIBLE_DEVICES` 恰好为一个
+  GPU UUID。安全门通过后 Warp 还必须只看见一个设备并使用容器逻辑 `cuda:0`，不得接收
+  宿主机 GPU 编号；任一元数据、可见性、设备数量或 CUDA 初始化检查失败均直接失败且不
+  回退 CPU。
+- GPU 共享底层函数要求由安全门签发的进程内强类型执行许可，不能仅凭 profile 的 CPU/GPU
+  布尔字段执行 CUDA；正式 profile 即使持有许可仍拒绝。许可是防误用机制，不是认证。
+- 模型创建前核对分配 UUID 与 Warp UUID。匹配记 matched；不匹配或非空非法格式直接失败；
+  缺失只能记 unavailable/warning。manifest 和 case 同时保存两个 UUID 及验证状态。
+- GPU integration smoke 的审计状态按阶段记录 scheduler metadata、可见 GPU 数、选定/初始
+  化设备、模型设备和物理推进。每步 solver 返回并完成 CUDA 同步后才计数；首次成功前，`actual_compute_device` 保持
+  `unknown` 且 `cuda_used=false`；完成固定 1000 步后才能标记
+  `gpu_physics_completed=true`，失败结果保留最后成功阶段。
+- manifest 保存工作树状态和源码 SHA-256。GPU 只接受干净且 commit 匹配的 checkout，或
+  由 `experiment_runner.release` 从干净 commit 导出并验证清单的源码；导出不部署或提交。
+- 当前 `check-readiness --json` 为只读部署检查；它不导入仿真栈、不创建 CUDA context、
+  不写文件或自动修复。远程结果隧道必须先验证结构化报告，GPU 未开放不阻止只读浏览。
+- `asset-readiness-v2` 要求所有绑定碰撞材质分别具备坡度所需摩擦字段；一个材质的完整
+  属性不能代替其他材质缺失的属性。运行前重新检查，不改写历史验收报告。
 - 本地 WSL 运行已明确为 **本地冒烟运行**：仍使用 MuJoCo 原生接触，但采用 CPU，仅验证
   代码和产物链路，所有结果显式标记为非正式。
 - 本地冒烟已实现中档摔落和固定 25° 斜坡各一个两秒工况。当前视频为
@@ -342,13 +372,19 @@ _Avoid_: 成功、全部失败、资产部分合格
 - **统一控制入口**的个人配置保存 Viewer 资产源目录、试验数据目录、SSH 别名、端口和是否
   自动打开浏览器，不保存密码、私钥、真实服务器地址或用户名；Windows 启动文件检测到
   缺少 `uv` 时只显示安装说明，不自动联网安装。
-- 第一阶段服务器必须能按 `uv.lock` 联网获取并校验 Python 依赖；无法下载时阻止部署，
-  不复制 Ubuntu 24.04 WSL 虚拟环境到 Ubuntu 22.04 服务器，也暂不建设离线依赖包。
+- GPU integration smoke 的 Python 3.12 隔离环境和锁定依赖必须在 experiment 激活、占用
+  GPU 前由人工部署关口准备完成。trial 只检查并直接调用显式的 `NEWTON_TEST_PYTHON`，
+  不执行普通 `uv run --frozen`、依赖解析、下载或安装；缺少预制环境时快速失败。本轮不
+  建设自动安装器、离线依赖包或自定义镜像构建器。
+- 默认模板的 Python 环境预装在镜像内；可替代为管理员认可的独立只读挂载。环境与数据
+  挂载分开，绝对路径、系统、glibc、架构和 CUDA 兼容性须在 GPU 分配前确认。trial 检查
+  运行依赖与锁文件的完整传递版本集合；PyYAML 仅属于开发测试组。
 - 私有代码部署优先使用绑定单个仓库的只读 Deploy Key；服务器无法访问 GitHub 时，可通过
   现有 SSH 传输经校验的离线 Git bundle。两种方式都只运行干净、确定的 Git commit，不
   复制本地工作树，也不保留个人 GitHub 账号的长期登录凭据。
-- 第一阶段代码部署已明确为通过普通 SSH 人工触发的固定流程：指定完整 commit、运行中
-  拒绝更新、冻结同步依赖并通过服务器冒烟测试；不使用 webhook 或自动部署。
+- 早期正式远程路线曾设计通过普通 SSH 人工触发代码部署；这不是当前 GPU integration
+  smoke 的 trial 接受条件。当前入口由人工复核的 Determined 配置显式传入完整 commit 和
+  预制 Python，不实现 webhook、自动部署或 experiment 提交器。
 - 候选 commit 只有通过服务器冒烟测试后才成为已验收版本；部署失败时单工作树恢复上一个
   已验收 commit 和锁定环境，恢复失败则关闭正式试验入口。
 - 同一资产同类试验的多次运行已明确为最新运行默认展开、历史运行按时间倒序折叠；新运行
@@ -357,7 +393,9 @@ _Avoid_: 成功、全部失败、资产部分合格
   **工况播放页**；二者读取同一个结果录像。
 - **工况视频条目**的缩略图已明确为仿真开始前的试验布置画面；最终状态截图单独保留，
   不作为默认视频缩略图。
-- 第一阶段不使用 30 分钟或其他整次运行墙钟硬上限；本地控制端保持在线时，试验运行到全部
-  有限工况自然结束，长时间无进展只警告而不自动停止。
-- SSH 本身不理解工况边界；本地控制程序与远程编排器已明确使用 **工况续行确认**协议，
-  不使用持续心跳。确认超时后运行标记 `interrupted`，已完成工况保留。
+- 早期正式多工况路线不使用 30 分钟整次运行墙钟硬上限；该设计不适用于当前受限 GPU
+  integration smoke。后者固定 1 秒物理时间、300 秒内部上限，并由 Determined 示例施加
+  8 分钟硬超时。
+- SSH 本身不理解工况边界；早期正式多工况路线中的本地控制程序与远程编排器使用
+  **工况续行确认**协议。当前单工况 GPU integration smoke 不使用该协议，只在
+  Determined trial 内以前台进程执行。

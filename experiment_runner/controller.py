@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import socket
 import subprocess
@@ -25,6 +26,7 @@ from .config import (
 )
 from .results import build_result_index
 from .storage import DataRoot
+from .paths import require_viewer_source
 from .web import create_result_server, install_static_site
 
 
@@ -61,6 +63,8 @@ def build_remote_result_command(
         "-T",
         "-o",
         "ExitOnForwardFailure=yes",
+        "-o",
+        "ConnectTimeout=10",
         "-L",
         f"127.0.0.1:{local}:127.0.0.1:{remote}",
         "--",
@@ -96,7 +100,14 @@ def build_remote_readiness_command(
     ]
 
 
-def check_remote_results_ready(host_alias: str) -> None:
+def check_remote_results_ready(host_alias: str, *, remote_port: int = 8765) -> dict:
+    try:
+        return _check_remote_results_ready(host_alias, remote_port=remote_port)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("服务器只读就绪检查超时；不会启动 SSH 隧道") from exc
+
+
+def _check_remote_results_ready(host_alias: str, *, remote_port: int = 8765) -> dict:
     ssh_executable = shutil.which("ssh.exe") or shutil.which("ssh")
     if ssh_executable is None:
         raise RuntimeError("找不到 OpenSSH 客户端 ssh.exe")
@@ -110,6 +121,9 @@ def check_remote_results_ready(host_alias: str) -> None:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        timeout=30,
+        encoding="utf-8",
+        errors="replace",
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip().splitlines()
@@ -118,6 +132,37 @@ def check_remote_results_ready(host_alias: str) -> None:
             "服务器尚未提供 newton-test-remote；本地程序不会自动部署或修改服务器"
             + suffix
         )
+    command = [
+        ssh_executable, "-T", "-o", "ConnectTimeout=10", "--", _validated_alias(host_alias),
+        "newton-test-remote", "check-readiness", "--json", "--port", str(_validated_port(remote_port)),
+    ]
+    completed = subprocess.run(command, check=False, text=True, capture_output=True,
+                               encoding="utf-8", errors="replace", timeout=60)
+    try:
+        report = json.loads(completed.stdout)
+        if type(report) is not dict or report.get("schema_version") != 1:
+            raise ValueError("unsupported readiness schema")
+        checks = report["checks"]
+        if not isinstance(checks, list) or not checks:
+            raise ValueError("missing readiness checks")
+        required = {"python", "package", "command", "storage", "writable", "loopback"}
+        seen = set()
+        blocked = []
+        for check in checks:
+            key = check["id"]
+            if not isinstance(key, str) or key in seen or check["status"] not in {"ready", "blocked"}:
+                raise ValueError("invalid readiness check")
+            seen.add(key)
+            print(f"{'通过' if check['status'] == 'ready' else '未就绪'}：{check['label']}")
+            if (key in required or check.get("required_for_results") is True) and check["status"] == "blocked":
+                blocked.append(key)
+        if not required <= seen:
+            raise ValueError("missing required result checks")
+        if blocked or report.get("results_ready") is not True or completed.returncode != 0:
+            raise RuntimeError("只读结果浏览尚未就绪；不会启动 SSH 隧道：" + ", ".join(blocked))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("服务器返回了无效的结构化就绪报告；不会启动 SSH 隧道") from exc
+    return report
 
 
 def _wait_for_local_port(
@@ -162,6 +207,7 @@ def open_remote_results(
     remote_port: int = 8765,
     open_browser: bool = True,
 ) -> int:
+    check_remote_results_ready(host_alias, remote_port=remote_port)
     ssh_executable = shutil.which("ssh.exe") or shutil.which("ssh")
     if ssh_executable is None:
         raise RuntimeError("找不到 Windows OpenSSH 客户端 ssh.exe")
@@ -260,6 +306,8 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def _require_separate_roots(config: ControllerConfig) -> None:
+    if config.viewer_source is not None:
+        require_viewer_source(config.viewer_source, config.data_root)
     if config.viewer_source is None or config.data_root is None:
         return
     viewer = config.viewer_source.resolve(strict=False)
@@ -482,6 +530,7 @@ def _choose_row(rows: list[dict[str, Any]], *, heading: str) -> dict[str, Any] |
 
 
 def launch_viewer(source: Path) -> int:
+    require_viewer_source(source, load_controller_config().data_root)
     if not source.exists():
         raise ValueError(f"Viewer 资产路径不存在：{source}")
     print("即将启动本地桌面 Viewer；根据所选求解器，它可能使用本机 GPU。")
@@ -497,6 +546,7 @@ def _open_viewer_interactive(config: ControllerConfig) -> None:
     source = Path(value).expanduser().resolve(strict=False) if value else config.viewer_source
     if source is None:
         raise ValueError("尚未设置 Viewer 资产源目录，也没有输入临时资产路径")
+    require_viewer_source(source, config.data_root)
     return_code = launch_viewer(source)
     if return_code:
         print(f"Viewer 已退出，退出码：{return_code}")
@@ -607,7 +657,6 @@ def _run_slope_smoke_interactive(config: ControllerConfig) -> None:
 def _open_remote_interactive(config: ControllerConfig) -> None:
     if config.ssh_alias is None:
         raise ValueError("尚未设置 SSH 服务器别名；请先进入“设置”")
-    check_remote_results_ready(config.ssh_alias)
     open_remote_results(
         host_alias=config.ssh_alias,
         local_port=config.local_port,

@@ -141,6 +141,17 @@ def _command_profiles(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_check_readiness(args: argparse.Namespace) -> int:
+    from .readiness import check_readiness
+    report = check_readiness(args.data_root, config_path=args.config, port=args.port)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for check in report["checks"]:
+            print(f"{check['label']}: {check['status']} — {check['detail']}")
+    return 0 if report["results_ready"] else 2
+
+
 def _command_smoke_drop(args: argparse.Namespace) -> int:
     from .smoke import run_cpu_smoke_drop
 
@@ -173,6 +184,26 @@ def _command_smoke_slope(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_smoke_drop_gpu(args: argparse.Namespace) -> int:
+    from .gpu_safety import GpuSmokeSafetyError
+    from .smoke import run_gpu_smoke_drop
+
+    try:
+        result = run_gpu_smoke_drop(
+            _data_root(args),
+            asset_identity=args.identity,
+            asset_version=args.version,
+            git_commit=args.git_commit,
+        )
+    except GpuSmokeSafetyError as exc:
+        raise ValueError(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("物理解算固定使用容器内唯一可见的逻辑设备 cuda:0；禁止 CPU fallback。")
+    print("当前 GPU 无头录像链路尚未验证，因此只保存结构化物理结果，不伪造视频。")
+    print("注意：这是 development/integration smoke，不是正式 GPU 物理试验结论。")
+    return 0
+
+
 def _add_data_root_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--data-root",
@@ -193,6 +224,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Newton-Test server-side storage, asset, and result commands."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    readiness = subparsers.add_parser("check-readiness", help="Read-only checks without CUDA or simulation.")
+    _add_data_root_arguments(readiness)
+    readiness.add_argument("--json", action="store_true")
+    readiness.add_argument("--port", type=int, default=8765)
+    readiness.set_defaults(handler=_command_check_readiness)
 
     configure = subparsers.add_parser(
         "configure-storage",
@@ -286,6 +323,25 @@ def build_parser() -> argparse.ArgumentParser:
     slope_smoke.add_argument("--git-commit", default=None)
     _add_data_root_arguments(slope_smoke)
     slope_smoke.set_defaults(handler=_command_smoke_slope)
+
+    gpu_smoke = subparsers.add_parser(
+        "smoke-drop-gpu",
+        help=(
+            "Run one bounded non-authoritative MJWarp CUDA drop integration smoke "
+            "inside an externally scheduled single-GPU container."
+        ),
+        description=(
+            "Run exactly one medium-height Newton SolverMuJoCo/MJWarp CUDA integration "
+            "smoke. Requires a complete Determined trial/allocation gate and exactly one "
+            "process-visible GPU, selects only container-logical cuda:0, forbids CPU "
+            "fallback, and does not submit a Determined experiment."
+        ),
+    )
+    gpu_smoke.add_argument("identity", help="Accepted drop-ready asset identity.")
+    gpu_smoke.add_argument("version", help="Complete immutable asset SHA-256 version.")
+    gpu_smoke.add_argument("--git-commit", default=None)
+    _add_data_root_arguments(gpu_smoke)
+    gpu_smoke.set_defaults(handler=_command_smoke_drop_gpu)
     return parser
 
 
