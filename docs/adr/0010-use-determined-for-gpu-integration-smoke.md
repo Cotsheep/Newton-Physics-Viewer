@@ -4,6 +4,8 @@ status: accepted
 
 # GPU 集成冒烟由 Determined 分配单个设备
 
+后续扩展：`smoke-drop-gpu --record-video` 使用独立的非正式 video-smoke 配置，沿用单 GPU 与限时约束，要求 EGL 渲染和 H.264 录像。渲染检查随该任务执行，失败不回退、不声称录像完成。首版无录像行为保留为默认路径，正式配置仍不可运行。配置和设备映射见 [录像说明](../../deployment/GPU_VIDEO_SMOKE.md)。
+
 目标集群使用 Determined 0.38.1。GPU 工作负载必须由操作者以 Determined experiment 提交，`slots_per_trial: 1` 负责把一块已分配 GPU 暴露给 trial；Newton-Test 只在 trial 内以前台命令运行，并选择容器逻辑 `cuda:0`，不接受宿主机编号、不自行提交任务、不启动后台服务、不回退 CPU。
 
 入口在任何 Warp/CUDA 初始化前要求 Determined 注入的 experiment、trial、task、allocation、单 slot 和 `DET_TASK_TYPE=TRIAL` 元数据，并要求 `NVIDIA_VISIBLE_DEVICES` 恰好为一个规范 GPU UUID；随后 Warp 仍须恰好发现一个设备。这是防止在普通单卡主机上误用入口的操作安全门，不是不可伪造的认证；实际资源授权和隔离仍由 Determined 与 NVIDIA 容器运行时承担。安全门通过后的运行审计分开记录 CUDA context、模型设备、首个 solver step 和完整 1000 步，不能把“选中设备”提前写成“GPU 物理已运行”。

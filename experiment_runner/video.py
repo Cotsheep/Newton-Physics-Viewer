@@ -93,6 +93,8 @@ class H264VideoWriter:
             if self.process.stderr
             else ""
         )
+        if self.process.stderr is not None:
+            self.process.stderr.close()
         return_code = self.process.wait()
         if return_code:
             if self.temporary.exists():
@@ -106,6 +108,13 @@ class H264VideoWriter:
         self._closed = True
         self.process.kill()
         self.process.wait()
+        if self.process.stdin is not None:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass  # The killed encoder may have closed its input first.
+        if self.process.stderr is not None:
+            self.process.stderr.close()
         if self.temporary.exists():
             self.temporary.unlink()
 

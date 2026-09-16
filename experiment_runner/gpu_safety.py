@@ -190,7 +190,10 @@ def require_gpu_execution_permit(permit: GpuExecutionPermit | None, profile: Any
     if profile is not None:
         from .profiles import get_profile
 
-        if profile != get_profile("mujoco-warp-cuda-dt1ms-integration-smoke-v1"):
+        if profile not in (
+            get_profile("mujoco-warp-cuda-dt1ms-integration-smoke-v1"),
+            get_profile("mujoco-warp-cuda-dt1ms-video-smoke-v1"),
+        ):
             raise GpuSmokeSafetyError("Only the fixed GPU integration smoke profile is permitted")
 
 

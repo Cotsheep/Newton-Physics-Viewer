@@ -28,6 +28,7 @@ from .web import install_static_site
 
 SMOKE_PROFILE = "mujoco-cpu-wsl-smoke-v1"
 GPU_SMOKE_PROFILE = "mujoco-warp-cuda-dt1ms-integration-smoke-v1"
+GPU_VIDEO_SMOKE_PROFILE = "mujoco-warp-cuda-dt1ms-video-smoke-v1"
 SLOPE_SMOKE_ANGLE_DEGREES = 25.0
 
 
@@ -339,6 +340,7 @@ def run_gpu_smoke_drop(
     asset_version: str,
     git_commit: str | None = None,
     gpu_runtime: Any | None = None,
+    record_video: bool = False,
 ) -> dict[str, Any]:
     """Run one bounded, non-authoritative MJWarp CUDA integration drop."""
 
@@ -351,7 +353,7 @@ def run_gpu_smoke_drop(
 
     # Validation is deliberately ordered so neither Warp discovery nor CUDA context
     # creation can happen before all non-GPU prerequisites and the trial gate pass.
-    profile = get_profile(GPU_SMOKE_PROFILE)
+    profile = get_profile(GPU_VIDEO_SMOKE_PROFILE if record_video else GPU_SMOKE_PROFILE)
     if profile.authoritative or profile.use_mujoco_cpu:
         raise RuntimeError("The GPU integration smoke profile safety boundary is invalid")
     duration = profile.case_duration_seconds
@@ -466,7 +468,8 @@ def run_gpu_smoke_drop(
         "metadata and NVIDIA visibility misuse gate passed; this environment gate "
         "is not authentication and real isolation remains the responsibility of "
         "Determined and the NVIDIA container runtime; CUDA is not initialized yet; "
-        "CPU fallback forbidden; headless recording not attempted\n",
+        "CPU fallback forbidden; "
+        + ("headless recording required\n" if record_video else "headless recording not attempted\n"),
     )
     started_at = utc_now()
     case_document: dict[str, Any] = {
@@ -539,6 +542,14 @@ def run_gpu_smoke_drop(
 
     scene: Any | None = None
     gpu_audit: Any | None = None
+    recording = {
+        "status": "not_attempted",
+        "reason_code": "execution_not_started" if record_video else "gpu_headless_recording_not_validated",
+        "files": [],
+    }
+    case_document["recording"] = recording
+    _update_manifest(run_directory, recording=recording)
+    atomic_write_json(case_directory / "case.json", case_document)
     try:
         # The Determined/NVIDIA metadata gate above must pass before this first
         # Warp runtime operation.  Discovery does not choose a host GPU index.
@@ -640,14 +651,34 @@ def run_gpu_smoke_drop(
             if number % 100 == 0:
                 persist_execution_state(**changes)
 
-        result = simulate_drop_case_without_recording(
+        simulate = simulate_drop_case_without_recording
+        recording_arguments: dict[str, Any] = {}
+        if record_video:
+            from .experiments.gpu_recording import record_gpu_drop_case
+
+            simulate = record_gpu_drop_case
+            recording = {"status": "running", "stage": "renderer_setup", "files": []}
+            case_document["recording"] = recording
+            _update_manifest(run_directory, recording=recording)
+            atomic_write_json(case_directory / "case.json", case_document)
+
+            def recording_progress(stage: str) -> None:
+                recording["stage"] = stage
+
+            recording_arguments = {
+                "output_directory": case_directory,
+                "on_recording_progress": recording_progress,
+            }
+        result = simulate(
             scene,
             profile=profile,
             duration_seconds=duration,
             on_physics_started=mark_physics_started,
             on_step_started=step_started,
             on_step_completed=step_completed,
+            **recording_arguments,
         )
+        recording = result["recording"]
         expected_steps = round(duration / profile.physics_dt)
         if result.get("physics_steps") != expected_steps:
             raise RuntimeError(
@@ -669,13 +700,19 @@ def run_gpu_smoke_drop(
         _append_run_log(
             run_directory,
             "GPU integration smoke completed; structured physics result saved; "
-            "video intentionally absent pending GPU headless rendering validation",
+            + ("headless video saved" if record_video else
+               "video intentionally absent pending GPU headless rendering validation"),
         )
         result_files = [
             "run.log",
             f"{case_relative}/case.json",
             "checksums.sha256",
         ]
+        if record_video:
+            result_files.extend([
+                "preview.jpg", f"{case_relative}/video.mp4",
+                f"{case_relative}/poster.jpg", f"{case_relative}/final.jpg",
+            ])
         _update_manifest(
             run_directory,
             finished_at=finished_at,
@@ -683,17 +720,14 @@ def run_gpu_smoke_drop(
             exit_code=0,
             failure_summary=None,
             environment=environment,
-            recording={
-                "status": "not_attempted",
-                "reason_code": "gpu_headless_recording_not_validated",
-                "files": [],
-            },
+            recording=recording,
         )
         update_run_status(
             run_directory,
             status="succeeded",
             phase="finished",
-            progress="1/1 GPU integration smoke case complete (structured result only)",
+            progress=("1/1 GPU video smoke case complete" if record_video else
+                      "1/1 GPU integration smoke case complete (structured result only)"),
             current_case=None,
             completed_cases=1,
             total_cases=1,
@@ -718,7 +752,7 @@ def run_gpu_smoke_drop(
             "actual_compute_device": actual_device,
             "visible_gpu_count": gpu_audit.visible_gpu_count,
             "cpu_fallback": False,
-            "recording_status": "not_attempted",
+            "recording_status": recording["status"],
         }
     except (Exception, KeyboardInterrupt) as exc:
         failed_at = utc_now()
@@ -763,16 +797,22 @@ def run_gpu_smoke_drop(
             ),
             "message": safe_failure,
         }
-        case_document.setdefault(
-            "recording",
-            {
-                "status": "not_attempted",
-                "reason_code": "gpu_headless_recording_not_validated",
-                "files": [],
-            },
-        )
+        if record_video and recording["status"] == "running":
+            recording = {
+                "status": "interrupted" if interrupted else "failed",
+                "stage": getattr(exc, "stage", recording.get("stage", "unknown")),
+                "reason_code": "gpu_video_smoke_failed", "files": [],
+            }
+        case_document["recording"] = recording
         atomic_write_json(case_directory / "case.json", case_document)
         failed_files = ["run.log", f"{case_relative}/case.json", "checksums.sha256"]
+        if record_video:
+            for relative in (
+                "preview.jpg", f"{case_relative}/video.mp4",
+                f"{case_relative}/poster.jpg", f"{case_relative}/final.jpg",
+            ):
+                if (run_directory / relative).is_file():
+                    failed_files.append(relative)
         _update_manifest(
             run_directory,
             finished_at=failed_at,
@@ -780,11 +820,7 @@ def run_gpu_smoke_drop(
             exit_code=130 if interrupted else 1,
             failure_summary=safe_failure,
             environment=environment,
-            recording={
-                "status": "not_attempted",
-                "reason_code": "gpu_headless_recording_not_validated",
-                "files": [],
-            },
+            recording=recording,
         )
         update_run_status(
             run_directory,

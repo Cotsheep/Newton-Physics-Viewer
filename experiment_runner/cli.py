@@ -194,12 +194,16 @@ def _command_smoke_drop_gpu(args: argparse.Namespace) -> int:
             asset_identity=args.identity,
             asset_version=args.version,
             git_commit=args.git_commit,
+            record_video=args.record_video,
         )
     except GpuSmokeSafetyError as exc:
         raise ValueError(str(exc)) from exc
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print("物理解算固定使用容器内唯一可见的逻辑设备 cuda:0；禁止 CPU fallback。")
-    print("当前 GPU 无头录像链路尚未验证，因此只保存结构化物理结果，不伪造视频。")
+    if args.record_video:
+        print("本次运行要求保存无头渲染录像；请在结果页检查视频内容。")
+    else:
+        print("本次未请求录像，仅保存结构化物理结果。")
     print("注意：这是 development/integration smoke，不是正式 GPU 物理试验结论。")
     return 0
 
@@ -340,6 +344,10 @@ def build_parser() -> argparse.ArgumentParser:
     gpu_smoke.add_argument("identity", help="Accepted drop-ready asset identity.")
     gpu_smoke.add_argument("version", help="Complete immutable asset SHA-256 version.")
     gpu_smoke.add_argument("--git-commit", default=None)
+    gpu_smoke.add_argument(
+        "--record-video", action="store_true",
+        help="Require EGL headless rendering and H.264 recording for this bounded case.",
+    )
     _add_data_root_arguments(gpu_smoke)
     gpu_smoke.set_defaults(handler=_command_smoke_drop_gpu)
     return parser

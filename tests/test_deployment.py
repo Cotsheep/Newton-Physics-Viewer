@@ -66,6 +66,19 @@ class DeploymentTests(unittest.TestCase):
     def test_yaml_structure_and_types(self):
         validate_template(self.document)
 
+    def test_video_template_retains_limits_and_requests_graphics_only_as_needed(self):
+        document = yaml.safe_load((ROOT / "deployment/determined-gpu-video-smoke-8min.yaml").read_text(encoding="utf-8"))
+        validate_template(document)
+        self.assertIn("--record-video", document["entrypoint"])
+        self.assertIn("timeout --signal=INT --kill-after=30s 8m", document["entrypoint"])
+        env = dict(item.split("=", 1) for item in document["environment"]["environment_variables"])
+        self.assertEqual(env["NVIDIA_DRIVER_CAPABILITIES"], "compute,utility,graphics")
+        self.assertEqual(env["PYOPENGL_PLATFORM"], "egl")
+        self.assertNotIn("NVIDIA_VISIBLE_DEVICES", env)
+        self.assertFalse(any(key.startswith("DET_") for key in env))
+        for command in ("pip install", "uv sync", "sudo", "det experiment"):
+            self.assertNotIn(command, document["entrypoint"])
+
     def test_wrong_nesting_and_string_or_boolean_slot_counts_fail(self):
         for value in ("1", True, 2):
             document = copy.deepcopy(self.document)

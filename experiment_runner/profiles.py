@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -103,6 +103,12 @@ _PROFILE_VALUES = {
     ),
 }
 
+_PROFILE_VALUES["mujoco-warp-cuda-dt1ms-video-smoke-v1"] = replace(
+    _PROFILE_VALUES["mujoco-warp-cuda-dt1ms-integration-smoke-v1"],
+    name="mujoco-warp-cuda-dt1ms-video-smoke-v1",
+    recording_mode="required",
+)
+
 PROFILES = MappingProxyType(_PROFILE_VALUES)
 
 
@@ -139,6 +145,16 @@ _PROFILE_AVAILABILITY = MappingProxyType(
                 "Available only after the fail-closed Determined single-trial GPU gate for "
                 "one bounded, non-authoritative medium-height drop integration smoke. "
                 "GPU headless recording is not yet enabled."
+            ),
+        },
+        "mujoco-warp-cuda-dt1ms-video-smoke-v1": {
+            "status": "development_integration_smoke_only",
+            "runnable": True,
+            "entrypoint": "smoke-drop-gpu --record-video",
+            "entrypoints": ("smoke-drop-gpu --record-video",),
+            "message": (
+                "One bounded single-GPU drop with required EGL rendering and H.264 video. "
+                "Development only; target-cluster rendering must be validated."
             ),
         },
     }

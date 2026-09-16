@@ -463,7 +463,7 @@ class RunnerHarness:
         self.stack.close()
         self.temporary.cleanup()
 
-    def run(self, environment_overrides: dict[str, str] | None = None):
+    def run(self, environment_overrides: dict[str, str] | None = None, *, record_video=False):
         from experiment_runner.smoke import run_gpu_smoke_drop
 
         environment = dict(
@@ -484,6 +484,7 @@ class RunnerHarness:
                 asset_identity="fixtures/box",
                 asset_version="a" * 64,
                 gpu_runtime=self.runtime,
+                record_video=record_video,
             )
 
     def documents(self) -> tuple[dict, dict, dict, str]:
@@ -772,6 +773,139 @@ class GpuSmokeRunnerTests(unittest.TestCase):
         self.assertFalse(preview_exists)
         self.assertFalse(video_exists)
         self.assertEqual(step_count, 1000)
+
+
+class GpuVideoSmokeTests(unittest.TestCase):
+    def recording_mocks(self, harness):
+        from asset_viewer.camera import AssetBounds
+        stack = harness.stack
+        viewer = mock.Mock()
+        stack.enter_context(mock.patch(
+            "experiment_runner.experiments.gpu_recording._open_gpu_viewer",
+            return_value=(viewer, {"backend": "egl", "device": "cuda:0"}),
+        ))
+        frame = stack.enter_context(mock.patch(
+            "experiment_runner.experiments.recording._render_frame",
+            return_value=np.full((360, 640, 3), 80, dtype=np.uint8),
+        ))
+        stack.enter_context(mock.patch(
+            "asset_viewer.camera.compute_asset_bounds",
+            return_value=AssetBounds(harness.bounds.minimum, harness.bounds.maximum),
+        ))
+        stack.enter_context(mock.patch("asset_viewer.camera.frame_camera_on_bounds"))
+        return viewer, frame
+
+    def test_video_uses_same_1000_steps_encodes_75_frames_and_is_indexed(self):
+        import hashlib
+        import imageio_ffmpeg
+        with RunnerHarness() as harness:
+            viewer, frame = self.recording_mocks(harness)
+            result = harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            run = harness.root.location("runs") / result["run_id"]
+            video = run / "cases/001-medium-gpu-integration-smoke/video.mp4"
+            count, seconds = imageio_ffmpeg.count_frames_and_secs(str(video))
+            self.assertEqual(count, 75)
+            self.assertAlmostEqual(seconds, 1.5)
+            self.assertEqual(case["video_frames"], count)
+            self.assertEqual(case["physics_steps"], 1000)
+            self.assertEqual(harness.scene.solver.step.call_count, 1000)
+            self.assertEqual(frame.call_count, 51)
+            self.assertEqual(status["status"], "succeeded")
+            self.assertEqual(manifest["recording"]["status"], "succeeded")
+            self.assertEqual(result["profile"], "mujoco-warp-cuda-dt1ms-video-smoke-v1")
+            self.assertFalse(case["authoritative"])
+            viewer.close.assert_called_once()
+            for line in (run / "checksums.sha256").read_text().splitlines():
+                digest, relative = line.split("  ", 1)
+                self.assertEqual(hashlib.sha256((run / relative).read_bytes()).hexdigest(), digest)
+            index = (harness.root.location("web") / "index.json").read_text(encoding="utf-8")
+            self.assertIn("video.mp4", index)
+            self.assertIn("poster.jpg", index)
+
+    def test_initial_frame_failure_keeps_physics_unstarted(self):
+        from experiment_runner.experiments.gpu_recording import GpuRecordingError
+        with RunnerHarness() as harness:
+            viewer, frame = self.recording_mocks(harness)
+            frame.side_effect = RuntimeError("interop failed")
+            with self.assertRaises(GpuRecordingError):
+                harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            self.assertEqual(case["execution"]["completed_physics_steps"], 0)
+            self.assertFalse(case["execution"]["cuda_used"])
+            self.assertEqual(case["recording"]["stage"], "frame_readback")
+            self.assertEqual(manifest["recording"]["status"], "failed")
+            self.assertEqual(status["status"], "failed")
+            viewer.close.assert_called_once()
+
+    def test_frame_failure_keeps_only_completed_physics_steps(self):
+        from experiment_runner.experiments.gpu_recording import GpuRecordingError
+        with RunnerHarness() as harness:
+            viewer, frame = self.recording_mocks(harness)
+            frame.side_effect = [frame.return_value, RuntimeError("frame failed")]
+            with self.assertRaises(GpuRecordingError):
+                harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            self.assertEqual(case["execution"]["completed_physics_steps"], 20)
+            self.assertTrue(case["execution"]["cuda_used"])
+            self.assertFalse(case["execution"]["gpu_physics_completed"])
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(manifest["recording"]["status"], "failed")
+            self.assertFalse(list(harness.root.location("runs").rglob("*.mp4")))
+            viewer.close.assert_called_once()
+
+    def test_encoding_failure_after_physics_does_not_report_video_success(self):
+        from experiment_runner.experiments.gpu_recording import GpuRecordingError
+        with RunnerHarness() as harness:
+            self.recording_mocks(harness)
+            with mock.patch("experiment_runner.video.H264VideoWriter") as writer:
+                writer.return_value.__exit__.side_effect = RuntimeError("encoder finalize failed")
+                with self.assertRaises(GpuRecordingError):
+                    harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            self.assertEqual(case["execution"]["completed_physics_steps"], 1000)
+            self.assertTrue(case["execution"]["gpu_physics_completed"])
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(manifest["recording"]["status"], "failed")
+            self.assertEqual(case["recording"]["stage"], "encoder_finalize")
+
+    def test_interrupt_closes_viewer_and_retains_interrupted_status(self):
+        with RunnerHarness() as harness:
+            viewer, frame = self.recording_mocks(harness)
+            frame.side_effect = KeyboardInterrupt()
+            with self.assertRaises(KeyboardInterrupt):
+                harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            self.assertEqual(status["status"], "interrupted")
+            self.assertEqual(case["recording"]["status"], "interrupted")
+            self.assertEqual(manifest["exit_code"], 130)
+            viewer.close.assert_called_once()
+
+    def test_video_option_does_not_bypass_allocation_gate(self):
+        with RunnerHarness() as harness:
+            environment = dict(TRIAL_ENVIRONMENT)
+            environment.pop("DET_TASK_ID")
+            with mock.patch("experiment_runner.experiments.gpu_recording._open_gpu_viewer") as opener:
+                with self.assertRaises(GpuSmokeSafetyError):
+                    harness.run(environment, record_video=True)
+                opener.assert_not_called()
+            self.assertEqual(harness.runtime.discovery_calls, 0)
+
+    def test_cli_video_flag_is_explicit_and_default_is_off(self):
+        from experiment_runner.cli import build_parser
+        args = ["smoke-drop-gpu", "fixtures/box", "a" * 64]
+        self.assertFalse(build_parser().parse_args(args).record_video)
+        self.assertTrue(build_parser().parse_args(args + ["--record-video"]).record_video)
+
+    def test_video_profile_is_permitted_but_modified_or_formal_profile_is_rejected(self):
+        from dataclasses import replace
+        from experiment_runner.gpu_safety import issue_gpu_execution_permit, require_gpu_execution_permit
+        permit = issue_gpu_execution_permit(TRIAL_ENVIRONMENT)
+        video = get_profile("mujoco-warp-cuda-dt1ms-video-smoke-v1")
+        require_gpu_execution_permit(permit, video)
+        for profile in (replace(video, case_duration_seconds=10), get_profile("mujoco-native-dt1ms-v1")):
+            with self.assertRaises(GpuSmokeSafetyError):
+                require_gpu_execution_permit(permit, profile)
 
 
 if __name__ == "__main__":

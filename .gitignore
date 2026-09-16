@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 .vscode/
 imgui.ini
+
+# Local deployment notes and machine-specific configuration
+/deployment/local/

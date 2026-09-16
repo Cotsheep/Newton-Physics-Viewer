@@ -1,0 +1,64 @@
+name: newton-test-gpu-video-smoke-8min
+description: >-
+  Non-authoritative single-case Newton SolverMuJoCo/MJWarp CUDA smoke
+  with required EGL rendering and H.264 video.
+
+environment:
+  image: REPLACE_WITH_APPROVED_PYTHON312_GPU_IMAGE
+  environment_variables:
+    - NEWTON_DATA_ROOT=REPLACE_WITH_TRIAL_DATA_ROOT
+    - NEWTON_SMOKE_ASSET_IDENTITY=REPLACE_WITH_ACCEPTED_ASSET_IDENTITY
+    - NEWTON_SMOKE_ASSET_VERSION=REPLACE_WITH_64_HEX_ASSET_VERSION
+    - NEWTON_TEST_GIT_COMMIT=REPLACE_WITH_40_HEX_DEPLOYED_GIT_COMMIT
+    - NEWTON_TEST_PYTHON=REPLACE_WITH_PREPARED_PYTHON312_EXECUTABLE
+    - PYTHONDONTWRITEBYTECODE=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    - PYOPENGL_PLATFORM=egl
+    - PYGLET_HEADLESS=true
+    - WARP_CACHE_PATH=/tmp/newton-test-cache/warp
+    - XDG_CACHE_HOME=/tmp/newton-test-cache
+    - CUDA_CACHE_PATH=/tmp/newton-test-cache/cuda
+
+resources:
+  slots_per_trial: 1
+  max_slots: 1
+  resource_pool: REPLACE_WITH_APPROVED_SINGLE_GPU_RESOURCE_POOL
+
+bind_mounts:
+  - host_path: REPLACE_WITH_APPROVED_HOST_DATA_ROOT
+    container_path: REPLACE_WITH_TRIAL_DATA_ROOT
+    read_only: false
+
+max_restarts: 0
+checkpoint_policy: none
+checkpoint_storage:
+  type: directory
+  container_path: /tmp/newton-test-checkpoints
+
+hyperparameters:
+  global_batch_size: 1
+
+searcher:
+  name: single
+  metric: integration_smoke_exit_code
+  smaller_is_better: true
+  max_length:
+    batches: 1
+
+entrypoint: >-
+  /bin/bash -lc '
+  set -euo pipefail;
+  mkdir -p -- "$WARP_CACHE_PATH" "$CUDA_CACHE_PATH";
+  test -d "$NEWTON_DATA_ROOT" || { echo "NEWTON_DATA_ROOT is not an initialized mounted directory" >&2; exit 2; };
+  test "${#NEWTON_SMOKE_ASSET_VERSION}" -eq 64 && [[ "$NEWTON_SMOKE_ASSET_VERSION" =~ ^[0-9a-f]{64}$ ]] || { echo "asset version must be 64 lowercase hexadecimal characters" >&2; exit 2; };
+  test "${#NEWTON_TEST_GIT_COMMIT}" -eq 40 && [[ "$NEWTON_TEST_GIT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Git commit must be 40 lowercase hexadecimal characters" >&2; exit 2; };
+  test -f "$NEWTON_TEST_PYTHON" && test -x "$NEWTON_TEST_PYTHON" || { echo "NEWTON_TEST_PYTHON must be a prepared executable file" >&2; exit 2; };
+  "$NEWTON_TEST_PYTHON" -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,12) else \"Python 3.12 required\")";
+  timeout --signal=INT --kill-after=30s 8m
+  "$NEWTON_TEST_PYTHON" -m experiment_runner.cli smoke-drop-gpu
+  "$NEWTON_SMOKE_ASSET_IDENTITY"
+  "$NEWTON_SMOKE_ASSET_VERSION"
+  --data-root "$NEWTON_DATA_ROOT"
+  --git-commit "$NEWTON_TEST_GIT_COMMIT"
+  --record-video
+  '

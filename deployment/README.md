@@ -1,5 +1,7 @@
 # Determined 单 GPU 集成冒烟交付说明
 
+新增可选的 [GPU 带录像冒烟入口](GPU_VIDEO_SMOKE.md)：`smoke-drop-gpu --record-video`，需要目标容器的 EGL 渲染验证。下文无录像限制描述的是默认入口；默认行为不变。
+
 当前交付范围是第一次真实 GPU integration smoke 的代码候选：单 trial、单 GPU、单个中等高度摔落、1000 步、非正式、不录像。正式 profile `mujoco-native-dt1ms-v1` 仍为 `reserved_not_runnable`。本入口尚未在目标集群验收，不能把本地 fake/mock 测试当作 GPU 执行证明。
 
 仓库不连接、提交、激活或终止 Determined experiment，不安装系统服务，不修改 SSH、Tailscale 或全局环境。操作员使用 [8 分钟配置模板](determined-gpu-smoke-8min.yaml) 人工提交。

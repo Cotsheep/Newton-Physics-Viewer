@@ -14,6 +14,7 @@ Newton-Test 用于查看 URDF、USD、GLB 资产，并逐步建立基于 Newton�
 | 本地 CPU 坡度冒烟 | 可用 | 只运行固定 25°、2 秒的单案例开发工况，不产生正式摩擦结论 |
 | 本地结果 Web UI | 可用 | 按资产封面组织结果，在页面中直接播放工况录像 |
 | 单 GPU 摔落 integration smoke | 已实现，目标集群未验证 | 只允许 Determined trial 内一个中等高度、1 秒、非正式结构化工况，不开放录像或参数扫描 |
+| 单 GPU 带录像冒烟 | 可选入口，目标渲染待验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/GPU_VIDEO_SMOKE.md) |
 | SSH 远程结果浏览 | 可用，但服务器需预先部署 | 经 Tailscale 网络和个人 SSH 身份建立按需只读隧道 |
 | 服务器就绪检查 | 已实现，本地验证 | `check-readiness --json` 检查环境、存储、编码和回环端口；不导入仿真栈或探测 GPU |
 | 正式 GPU 批次 | 未开放 | 等待管理员控制的 GPU 授权策略和远程集成验收 |
@@ -125,6 +126,8 @@ OpenGL，并在推进物理时间前验证渲染器为软件实现；验证失�
 结果页支持视频进度条和下载，但不提供删除按钮。当前如需处理结果，只能通过以后实现的完整运行回收流程；不要单独删除某个 `video.mp4`，否则会破坏运行结果的一致性。
 
 ### GPU integration smoke（服务器侧开发入口）
+
+可选的 `--record-video` 使用独立配置增加无头录像，详见 [GPU 带录像冒烟](deployment/GPU_VIDEO_SMOKE.md)。下文仅保存结构化产物的描述适用于默认、不带此选项的入口。
 
 服务器侧新增了独立命令 `newton-test-remote smoke-drop-gpu`，但它不会出现在普通本地菜单或 Viewer 中，也不负责提交 Determined experiment。它只应由操作者在 `slots_per_trial: 1` 的 Determined trial 内前台调用。命令会在任何 Warp/CUDA 初始化前 fail-closed 检查 trial、allocation、单 slot 元数据和唯一的 `NVIDIA_VISIBLE_DEVICES=GPU-...` UUID；这只是防误用安全门，不是不可伪造的认证，真正隔离由 Determined/NVIDIA runtime 提供。随后 Warp 仍必须恰好发现一块设备，并且只选择容器逻辑 `cuda:0`。命令不接收宿主机 GPU 编号，发现元数据缺失、零块、多块、初始化失败、模型设备错误或 CPU solver 时立即失败，绝不回退 CPU。
 
