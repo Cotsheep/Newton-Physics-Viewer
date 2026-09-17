@@ -98,9 +98,27 @@ def _egl_device_for_cuda_zero(permit: GpuExecutionPermit) -> tuple[int, int]:
     return matches[0]
 
 
-def _open_gpu_viewer(scene: Any, profile: ExperimentProfile) -> tuple[Any, dict[str, Any]]:
-    require_gpu_execution_permit(scene.gpu_permit, profile)
-    require_scene_on_logical_gpu(scene)
+def preflight_gpu_rendering(permit: GpuExecutionPermit) -> tuple[int, int]:
+    """Check the graphics path after CUDA initialization, before model compilation."""
+    require_gpu_execution_permit(permit)
+    try:
+        return _prepare_egl_device(permit)
+    except Exception as exc:
+        from ..graphics_diagnostics import collect_graphics_loader_evidence
+
+        evidence = dict(getattr(exc, "diagnostics", None) or {
+            "reason_code": "egl_preflight_failed", "error_type": type(exc).__name__,
+            "message": str(exc)[:2048],
+        })
+        try:
+            evidence["graphics_loader"] = collect_graphics_loader_evidence()
+        except Exception as diagnostic_error:
+            # Diagnostic collection must never replace the original failure.
+            evidence["graphics_loader"] = {"collection_error": type(diagnostic_error).__name__}
+        raise GpuRecordingError("renderer_preflight", diagnostics=evidence) from exc
+
+
+def _prepare_egl_device(permit: GpuExecutionPermit) -> tuple[int, int]:
     if sys.platform != "linux":
         raise RuntimeError("GPU video smoke requires a Linux Determined trial")
     # EGL and PyOpenGL must be configured before either library creates a context.
@@ -112,7 +130,15 @@ def _open_gpu_viewer(scene: Any, profile: ExperimentProfile) -> tuple[Any, dict[
     import pyglet
 
     pyglet.options["headless"] = True
-    egl_index, egl_device = _egl_device_for_cuda_zero(scene.gpu_permit)
+    return _egl_device_for_cuda_zero(permit)
+
+
+def _open_gpu_viewer(scene: Any, profile: ExperimentProfile) -> tuple[Any, dict[str, Any]]:
+    require_gpu_execution_permit(scene.gpu_permit, profile)
+    require_scene_on_logical_gpu(scene)
+    egl_index, egl_device = _prepare_egl_device(scene.gpu_permit)
+    import pyglet
+
     pyglet.options["headless_device"] = egl_index
 
     import newton.viewer

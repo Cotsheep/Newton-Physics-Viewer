@@ -422,6 +422,10 @@ class RunnerHarness:
         )
 
     def __enter__(self):
+        self.graphics_preflight = self.stack.enter_context(mock.patch(
+            "experiment_runner.experiments.gpu_recording.preflight_gpu_rendering",
+            return_value=(0, 100),
+        ))
         self.stack.enter_context(mock.patch("experiment_runner.release.require_gpu_source", return_value={"verification": "fake"}))
         self.stack.enter_context(mock.patch("experiment_runner.readiness.require_locked_runtime", return_value={}))
         self.synchronize = self.stack.enter_context(mock.patch(
@@ -776,6 +780,52 @@ class GpuSmokeRunnerTests(unittest.TestCase):
 
 
 class GpuVideoSmokeTests(unittest.TestCase):
+    def test_software_only_egl_failure_is_saved_before_model_creation(self):
+        from experiment_runner.experiments.gpu_recording import (
+            EglDeviceMappingError, GpuRecordingError, preflight_gpu_rendering,
+        )
+        evidence = {
+            "reason_code": "no_cuda_device_extension", "egl_device_count": 1,
+            "devices": [{"egl_index": 0, "software_device": True, "supports_cuda_mapping": False}],
+        }
+        loader = {"library_loads": {"libEGL_nvidia.so.0": {"loaded": False, "error": "missing"}}}
+        with RunnerHarness() as harness:
+            harness.graphics_preflight.side_effect = preflight_gpu_rendering
+            with mock.patch(
+                "experiment_runner.experiments.gpu_recording._prepare_egl_device",
+                side_effect=EglDeviceMappingError(evidence),
+            ), mock.patch(
+                "experiment_runner.graphics_diagnostics.collect_graphics_loader_evidence", return_value=loader,
+            ):
+                with self.assertRaises(GpuRecordingError):
+                    harness.run(record_video=True)
+            harness.create_scene.assert_not_called()
+            harness.scene.solver.step.assert_not_called()
+            manifest, status, case, _ = harness.documents()
+            for recording in (manifest["recording"], case["recording"]):
+                self.assertEqual(recording["status"], "failed")
+                self.assertEqual(recording["stage"], "renderer_preflight")
+                self.assertEqual(recording["diagnostics"]["graphics_loader"], loader)
+                self.assertEqual(recording["diagnostics"]["reason_code"], evidence["reason_code"])
+            self.assertEqual(status["status"], "failed")
+            self.assertFalse(case["execution"]["cuda_used"])
+            self.assertEqual(case["execution"]["completed_physics_steps"], 0)
+
+    def test_no_video_does_not_load_graphics(self):
+        with RunnerHarness() as harness:
+            harness.run()
+            harness.graphics_preflight.assert_not_called()
+
+    def test_scene_failure_after_preflight_is_not_labelled_an_egl_failure(self):
+        with RunnerHarness() as harness:
+            harness.create_scene.side_effect = RuntimeError("model failed")
+            with self.assertRaisesRegex(RuntimeError, "model failed"):
+                harness.run(record_video=True)
+            harness.graphics_preflight.assert_called_once()
+            manifest, _status, case, _log = harness.documents()
+            self.assertEqual(case["recording"]["stage"], "scene_setup")
+            self.assertEqual(manifest["recording"]["status"], "failed")
+
     def recording_mocks(self, harness):
         from asset_viewer.camera import AssetBounds
         stack = harness.stack

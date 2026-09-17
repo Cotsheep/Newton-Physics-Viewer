@@ -584,6 +584,17 @@ def run_gpu_smoke_drop(
             allocated_gpu_uuid=allocation.nvidia_visible_device_uuid,
             runtime_gpu_uuid=gpu_audit.uuid,
         )
+        if record_video:
+            from .experiments.gpu_recording import preflight_gpu_rendering
+
+            recording = {"status": "running", "stage": "renderer_preflight", "files": []}
+            case_document["recording"] = recording
+            _update_manifest(run_directory, recording=recording)
+            atomic_write_json(case_directory / "case.json", case_document)
+            preflight_gpu_rendering(gpu_permit)
+            recording["stage"] = "scene_setup"
+            _update_manifest(run_directory, recording=recording)
+            atomic_write_json(case_directory / "case.json", case_document)
         from .experiments.drop import (
             create_drop_scene,
             measure_drop_geometry,

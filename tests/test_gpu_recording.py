@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from experiment_runner.experiments.gpu_recording import _egl_device_for_cuda_zero
@@ -82,6 +84,52 @@ class EglDeviceMappingTests(unittest.TestCase):
         evidence = caught.exception.diagnostics
         self.assertFalse(evidence["devices"][0]["supports_cuda_mapping"])
         self.assertEqual(evidence["devices"][1]["cuda_device"], 3)
+
+
+class GraphicsLoaderEvidenceTests(unittest.TestCase):
+    def test_vendor_override_is_reported_and_unrelated_environment_is_not(self):
+        from experiment_runner.graphics_diagnostics import collect_graphics_loader_evidence
+
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            vendor = Path(directory).relative_to(Path.cwd()) / "nvidia.json"
+            vendor.write_text('{"ICD":{"library_path":"libEGL_nvidia.so.0"}}')
+            environ = {
+                "__EGL_VENDOR_LIBRARY_FILENAMES": str(vendor),
+                "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+                "REGISTRY_PASSWORD": "must-not-be-logged",
+            }
+            def loader(name):
+                if name == "libEGL_nvidia.so.0":
+                    raise OSError("libnvidia-eglcore.so.575.57.08: cannot open shared object file")
+                return object()
+            report = collect_graphics_loader_evidence(environ=environ, loader=loader)
+        self.assertEqual(report["vendor_selection"], "explicit_files")
+        self.assertEqual(report["vendor_configs"][0]["library_path"], "libEGL_nvidia.so.0")
+        self.assertFalse(report["library_loads"]["libEGL_nvidia.so.0"]["loaded"])
+        self.assertIn("libnvidia-eglcore", report["library_loads"]["libEGL_nvidia.so.0"]["error"])
+        self.assertNotIn("REGISTRY_PASSWORD", str(report))
+        self.assertNotIn("must-not-be-logged", str(report))
+
+    def test_invalid_vendor_json_does_not_hide_original_mapping_failure(self):
+        from experiment_runner.graphics_diagnostics import collect_graphics_loader_evidence
+
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            vendor = Path(directory).relative_to(Path.cwd()) / "bad.json"
+            vendor.write_text("not json")
+            report = collect_graphics_loader_evidence(
+                environ={"__EGL_VENDOR_LIBRARY_FILENAMES": str(vendor)},
+                loader=lambda name: object(),
+            )
+        self.assertEqual(report["vendor_configs"][0]["error"], "JSONDecodeError")
+
+    def test_empty_explicit_vendor_list_does_not_claim_default_discovery(self):
+        from experiment_runner.graphics_diagnostics import collect_graphics_loader_evidence
+
+        report = collect_graphics_loader_evidence(
+            environ={"__EGL_VENDOR_LIBRARY_FILENAMES": ""}, loader=lambda name: object(),
+        )
+        self.assertEqual(report["vendor_selection"], "explicit_files")
+        self.assertEqual(report["vendor_configs"], [])
 
 
 if __name__ == "__main__":

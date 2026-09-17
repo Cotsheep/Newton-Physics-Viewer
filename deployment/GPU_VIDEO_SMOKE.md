@@ -46,7 +46,36 @@ environment_variables:
 
 第一帧的真实 CUDA/OpenGL 取帧发生在推进物理前。渲染、取帧或编码失败会令整个录像运行失败；已实际完成的物理步数仍保留。物理完成但编码失败，也不能报告录像成功。原 CPU 冒烟的强制软件渲染规则不变。
 
-`case.json` 和 manifest 的 `recording` 字段记录未尝试、运行中、成功、失败或中断状态，并在失败时保留阶段：`renderer_setup`、`frame_readback`、`encoding`、`simulating`、`encoder_finalize` 或 `renderer_close`。结合 trial 日志中的原始异常定位系统库或驱动问题。
+`case.json` 和 manifest 的 `recording` 字段记录未尝试、运行中、成功、失败或中断状态，并在失败时保留阶段：`renderer_preflight`、`scene_setup`、`renderer_setup`、`frame_readback`、`encoding`、`simulating`、`encoder_finalize` 或 `renderer_close`。结合 trial 日志中的原始异常定位系统库或驱动问题。
+
+录像入口在单 GPU 身份核对、CUDA 初始化之后，模型测量和编译之前检查 EGL 设备映射。
+检查失败时立即结束当前任务，不先编译模型。实际创建 viewer 时仍重新核对设备和 OpenGL vendor；
+早期检查通过并不表示取帧或编码已经通过。不录像的 GPU 入口不执行图形检查。
+
+早期失败的 `recording.diagnostics.graphics_loader` 包含以下有界信息：
+
+- NVIDIA 内核驱动版本、图形加载相关环境变量白名单。
+- 进程初始环境中的 `NVIDIA_DRIVER_CAPABILITIES` 条目，可显示容器启动时追加的重复设置；
+  同时保留 Python 可见值。它们不能单独证明驱动已正确注入。
+- 诊断加载前已经加载的 EGL/NVIDIA 图形库路径。
+- EGL vendor 配置的路径和 `library_path`，以及固定库名的动态加载成功与否和原始加载错误。
+
+库加载失败可能是库本身缺失，也可能是依赖缺失，不能统一解释为“未安装”；库加载成功也不证明
+GPU context 可创建。只读取指定 vendor 文件中的库路径，不输出完整环境、任意配置正文或认证信息。
+诊断收集失败不会覆盖原始 EGL 错误。不安装驱动、不修改全局加载路径，不改变 GPU 可见性。
+
+### 用户目录中的 NVIDIA 图形库
+
+如需在用户目录准备图形库，应先从实际 trial 的持久化 `case.json` 中读取
+`execution.nvidia_driver_version`，选取匹配的官方用户态组件，保存在独立目录，原环境保留。
+具体组件和依赖须按版本确认，不能把开发容器驱动版本或 CUDA API 版本当作计算节点驱动版本。
+
+EGL/GLVND 可通过任务环境中的 `__EGL_VENDOR_LIBRARY_FILENAMES` 指定 vendor JSON，
+再通过入口启动 Python **之前**设置的 `LD_LIBRARY_PATH` 查找配套依赖。
+vendor JSON 的 `ICD.library_path` 可指向 NVIDIA EGL 库绝对路径。这是显式配置方式，
+本程序不会自动下载、生成或启用图形库包。必须保留设备身份、NVIDIA vendor 和实际取帧检查，
+并在同一次录像任务中验证；不得用软件渲染掩盖失败。
+参见 [GLVND 官方加载实现](https://github.com/NVIDIA/libglvnd/blob/master/src/EGL/libeglvendor.c)。
 
 EGL 设备匹配失败时，异常文本和 `recording.diagnostics` 会保留候选数量、CUDA 映射扩展支持、软件设备标记、属性查询是否成功，以及实际返回的 CUDA 设备编号。原因码用于区分：
 
