@@ -803,6 +803,9 @@ def run_gpu_smoke_drop(
                 "stage": getattr(exc, "stage", recording.get("stage", "unknown")),
                 "reason_code": "gpu_video_smoke_failed", "files": [],
             }
+            diagnostics = getattr(exc, "diagnostics", None)
+            if diagnostics is not None:
+                recording["diagnostics"] = diagnostics
         case_document["recording"] = recording
         atomic_write_json(case_directory / "case.json", case_document)
         failed_files = ["run.log", f"{case_relative}/case.json", "checksums.sha256"]

@@ -838,6 +838,29 @@ class GpuVideoSmokeTests(unittest.TestCase):
             self.assertEqual(status["status"], "failed")
             viewer.close.assert_called_once()
 
+    def test_egl_mapping_failure_evidence_survives_recording_wrapper_and_persistence(self):
+        from experiment_runner.experiments.gpu_recording import EglDeviceMappingError, GpuRecordingError
+        evidence = {
+            "reason_code": "no_logical_cuda_zero", "egl_device_count": 1,
+            "devices": [{"egl_index": 0, "supports_cuda_mapping": True, "cuda_device": 3}],
+        }
+        with RunnerHarness() as harness:
+            with mock.patch(
+                "experiment_runner.experiments.gpu_recording._open_gpu_viewer",
+                side_effect=EglDeviceMappingError(evidence),
+            ):
+                with self.assertRaises(GpuRecordingError) as caught:
+                    harness.run(record_video=True)
+            manifest, status, case, _ = harness.documents()
+            self.assertIn("no_logical_cuda_zero", str(caught.exception))
+            self.assertEqual(manifest["recording"]["diagnostics"], evidence)
+            self.assertEqual(case["recording"]["diagnostics"], evidence)
+            self.assertEqual(case["recording"]["stage"], "renderer_setup")
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(case["execution"]["completed_physics_steps"], 0)
+            self.assertFalse(case["execution"]["cuda_used"])
+            harness.scene.solver.step.assert_not_called()
+
     def test_frame_failure_keeps_only_completed_physics_steps(self):
         from experiment_runner.experiments.gpu_recording import GpuRecordingError
         with RunnerHarness() as harness:

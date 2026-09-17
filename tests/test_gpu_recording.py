@@ -61,6 +61,28 @@ class EglDeviceMappingTests(unittest.TestCase):
         with self.assertRaises(GpuSmokeSafetyError):
             _egl_device_for_cuda_zero(None)
 
+    def test_mapping_failure_reports_which_condition_prevented_selection(self):
+        cases = (
+            ([None], "no_cuda_device_extension"),
+            ([3], "no_logical_cuda_zero"),
+            ([0, 0], "ambiguous_logical_cuda_zero"),
+        )
+        for devices, reason in cases:
+            with self.subTest(devices=devices), self.assertRaises(RuntimeError) as caught:
+                self.select(devices)
+            evidence = caught.exception.diagnostics
+            self.assertEqual(evidence["reason_code"], reason)
+            self.assertEqual(evidence["egl_device_count"], len(devices))
+            self.assertEqual(len(evidence["devices"]), len(devices))
+            self.assertIn(reason, str(caught.exception))
+
+    def test_nonzero_cuda_handle_is_reported_without_selecting_it(self):
+        with self.assertRaises(RuntimeError) as caught:
+            self.select([None, 3])
+        evidence = caught.exception.diagnostics
+        self.assertFalse(evidence["devices"][0]["supports_cuda_mapping"])
+        self.assertEqual(evidence["devices"][1]["cuda_device"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

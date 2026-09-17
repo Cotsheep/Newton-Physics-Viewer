@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
 import time
@@ -13,9 +14,24 @@ from ..profiles import ExperimentProfile, get_profile
 
 
 class GpuRecordingError(RuntimeError):
-    def __init__(self, stage: str) -> None:
+    def __init__(self, stage: str, *, diagnostics: dict[str, Any] | None = None) -> None:
         self.stage = stage
-        super().__init__(f"GPU recording failed during {stage}; no rendering fallback was attempted")
+        self.diagnostics = diagnostics
+        message = f"GPU recording failed during {stage}; no rendering fallback was attempted"
+        if diagnostics is not None:
+            message += "; EGL diagnostics=" + json.dumps(diagnostics, sort_keys=True)
+        super().__init__(message)
+
+
+class EglDeviceMappingError(RuntimeError):
+    """A failed match with bounded, non-secret device-query evidence."""
+
+    def __init__(self, diagnostics: dict[str, Any]) -> None:
+        self.diagnostics = diagnostics
+        super().__init__(
+            "Cannot uniquely map EGL to the allocated logical CUDA device; "
+            + json.dumps(diagnostics, sort_keys=True)
+        )
 
 
 def _egl_device_for_cuda_zero(permit: GpuExecutionPermit) -> tuple[int, int]:
@@ -37,21 +53,48 @@ def _egl_device_for_cuda_zero(permit: GpuExecutionPermit) -> tuple[int, int]:
         [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_ssize_t)],
     )
     count = egl.EGLint()
-    if not eglext.eglQueryDevicesEXT(0, None, ctypes.byref(count)) or not 0 < count.value <= 64:
-        raise RuntimeError("EGL device enumeration unavailable")
+    count_ok = bool(eglext.eglQueryDevicesEXT(0, None, ctypes.byref(count)))
+    evidence: dict[str, Any] = {"egl_device_count": count.value, "devices": []}
+    if not count_ok or not 0 < count.value <= 64:
+        evidence["reason_code"] = "egl_device_enumeration_unavailable"
+        raise EglDeviceMappingError(evidence)
     devices = (eglext.EGLDeviceEXT * count.value)()
     if not eglext.eglQueryDevicesEXT(count.value, devices, ctypes.byref(count)):
-        raise RuntimeError("EGL device enumeration failed")
+        evidence["reason_code"] = "egl_device_enumeration_failed"
+        raise EglDeviceMappingError(evidence)
+    evidence["egl_device_count"] = count.value
     matches = []
     for index in range(count.value):
         extensions = (query_string(devices[index], 0x3055) or b"").split()  # EGL_EXTENSIONS
-        if b"EGL_NV_device_cuda" not in extensions:
+        supports_mapping = b"EGL_NV_device_cuda" in extensions
+        item = {
+            "egl_index": index,
+            "supports_cuda_mapping": supports_mapping,
+            "software_device": b"EGL_MESA_device_software" in extensions,
+            "cuda_attribute_query_ok": None,
+            "cuda_device": None,
+        }
+        evidence["devices"].append(item)
+        if not supports_mapping:
             continue
         cuda_device = ctypes.c_ssize_t(-1)
-        if query_attribute(devices[index], 0x323A, ctypes.byref(cuda_device)) and cuda_device.value == 0:
+        query_ok = bool(query_attribute(devices[index], 0x323A, ctypes.byref(cuda_device)))
+        item["cuda_attribute_query_ok"] = query_ok
+        if query_ok:
+            item["cuda_device"] = cuda_device.value
+        if query_ok and cuda_device.value == 0:
             matches.append((index, devices[index]))
     if len(matches) != 1:
-        raise RuntimeError("Cannot uniquely map EGL to the allocated logical CUDA device")
+        if len(matches) > 1:
+            reason = "ambiguous_logical_cuda_zero"
+        elif not any(item["supports_cuda_mapping"] for item in evidence["devices"]):
+            reason = "no_cuda_device_extension"
+        elif not any(item["cuda_attribute_query_ok"] for item in evidence["devices"]):
+            reason = "cuda_attribute_query_failed"
+        else:
+            reason = "no_logical_cuda_zero"
+        evidence["reason_code"] = reason
+        raise EglDeviceMappingError(evidence)
     return matches[0]
 
 
@@ -224,7 +267,7 @@ def record_gpu_drop_case(
             "recording": {"status": "succeeded", "files": list(files.values())},
         }
     except Exception as exc:
-        raise GpuRecordingError(stage) from exc
+        raise GpuRecordingError(stage, diagnostics=getattr(exc, "diagnostics", None)) from exc
     finally:
         if viewer is not None:
             viewer.close()

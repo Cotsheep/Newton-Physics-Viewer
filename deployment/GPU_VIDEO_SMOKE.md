@@ -48,4 +48,16 @@ environment_variables:
 
 `case.json` 和 manifest 的 `recording` 字段记录未尝试、运行中、成功、失败或中断状态，并在失败时保留阶段：`renderer_setup`、`frame_readback`、`encoding`、`simulating`、`encoder_finalize` 或 `renderer_close`。结合 trial 日志中的原始异常定位系统库或驱动问题。
 
+EGL 设备匹配失败时，异常文本和 `recording.diagnostics` 会保留候选数量、CUDA 映射扩展支持、软件设备标记、属性查询是否成功，以及实际返回的 CUDA 设备编号。原因码用于区分：
+
+| 原因码 | 含义 |
+| --- | --- |
+| `no_cuda_device_extension` | 枚举出的设备均未声明 CUDA 映射扩展；不能仅凭此断言驱动未安装 |
+| `cuda_attribute_query_failed` | 存在声明扩展的设备，但相应属性查询均失败 |
+| `no_logical_cuda_zero` | 属性查询有返回值，但没有返回 0 的设备；需要进一步确认编号与设备身份 |
+| `ambiguous_logical_cuda_zero` | 多个候选返回 0，无法唯一选择 |
+| `egl_device_enumeration_unavailable` / `egl_device_enumeration_failed` | 设备数量或列表查询未满足要求 |
+
+这些诊断不会创建候选设备的渲染 context，也不会改变 CUDA 可见性或选择规则；用于在同一次录像任务中保留失败证据，不能代替目标环境的实际诊断。
+
 成功的录像运行将保存每个工况的 `video.mp4`、`poster.jpg`、`final.jpg` 及运行预览 `preview.jpg`，并纳入结果校验清单。现有结果索引可提供对应的播放和图片链接。仍需人工检查画面是否正常、相机是否覆盖完整运动过程；文件存在不能替代画面检查。
