@@ -128,7 +128,10 @@ class SlopeGeometryTests(unittest.TestCase):
 
         builder = mock.Mock(body_count=2)
         geometry = mock.Mock(asset_translation=np.zeros(3), asset_rotation_xyzw=np.zeros(4))
-        with mock.patch("experiment_runner.experiments.slope.configure_warp_cpu_only"):
+        with (
+            mock.patch("experiment_runner.experiments.slope.configure_warp_cpu_only"),
+            mock.patch("experiment_runner.experiments.slope.newton.solvers.SolverMuJoCo.register_custom_attributes"),
+        ):
             with mock.patch(
                 "experiment_runner.experiments.slope.newton.ModelBuilder",
                 return_value=builder,

@@ -163,14 +163,14 @@ def collect_usd_dependencies(package_root: Path) -> tuple[Path, ...]:
                 "The USD stage contains a dependency without a local file",
             )
         candidates.append(Path(real_path))
-    for asset in assets:
-        resolved_path = getattr(asset, "resolvedPath", "")
-        if not resolved_path:
+    # ComputeAllDependencies returns resolved path strings for non-layer assets.
+    for asset_path in assets:
+        if not asset_path:
             raise AssetValidationError(
                 "unresolved_asset_dependency",
                 "The USD stage contains an unresolved dependency",
             )
-        candidates.append(Path(resolved_path))
+        candidates.append(Path(asset_path))
 
     unique: dict[str, Path] = {}
     for candidate in candidates:

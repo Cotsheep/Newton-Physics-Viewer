@@ -231,6 +231,7 @@ def create_slope_scene(
     require_cpu_smoke_profile(profile)
     configure_warp_cpu_only()
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     try:
         builder.add_usd(
             str(asset_path),

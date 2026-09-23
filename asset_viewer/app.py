@@ -230,6 +230,8 @@ def build_model(
             raise ValueError(
                 "--scale does not apply to USD assets; author metersPerUnit in the USD stage instead"
             )
+        # Register before import, otherwise authored mjc:* shape fields are lost.
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         try:
             builder.add_usd(
                 str(asset_path),

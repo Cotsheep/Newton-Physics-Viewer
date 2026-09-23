@@ -19,6 +19,7 @@ from experiment_runner.assets import (
     accept_asset,
     inspect_template_readiness,
     normalize_asset_identity,
+    snapshot_asset_version,
 )
 from experiment_runner.config import (
     ControllerConfig,
@@ -399,6 +400,67 @@ class AssetAcceptanceTests(unittest.TestCase):
             ):
                 report = accept_asset(root, "props/versioned", enforce_readonly=False)
         self.assertEqual(report["git_commit"], "c" * 40)
+
+    def test_non_layer_dependencies_are_hashed_and_versioned(self) -> None:
+        content = READY_USDA.replace(
+            'def Xform "World"\n{',
+            'def Xform "World"\n{\n'
+            '    custom asset[] sourceFiles = [@source.json@, @texture.png@]',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            versions = []
+            for mass in (1, 2):
+                package = self._write_package(root, "props/external-files", content)
+                payload = json.dumps({"mass": mass})
+                (package / "source.json").write_text(payload, encoding="utf-8")
+                Image.new("RGB", (1, 1), "blue").save(package / "texture.png")
+                report = accept_asset(root, "props/external-files", enforce_readonly=False)
+                self.assertEqual(report["status"], "accepted", report)
+                self.assertEqual(
+                    {item["path"] for item in report["dependencies"]},
+                    {ASSET_ENTRYPOINT, "source.json", "texture.png"},
+                )
+                destination = root.location("assets") / "props/external-files" / report["asset_version"]
+                self.assertEqual((destination / "source.json").read_text(encoding="utf-8"), payload)
+                self.assertFalse(package.exists())
+                snapshot = snapshot_asset_version(root, "props/external-files", report["asset_version"])
+                self.assertEqual(snapshot["version"], report["asset_version"])
+                versions.append(report["asset_version"])
+            self.assertNotEqual(*versions)
+            (destination / "source.json").write_text("changed after admission", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no longer matches its version"):
+                snapshot_asset_version(root, "props/external-files", versions[-1])
+
+    def test_non_layer_dependency_outside_package_is_rejected(self) -> None:
+        content = READY_USDA.replace(
+            'def Xform "World"\n{',
+            'def Xform "World"\n{\n    custom asset sourceFile = @../outside.json@',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            package = self._write_package(root, "props/escaped", content)
+            (package.parent / "outside.json").write_text("{}", encoding="utf-8")
+            report = accept_asset(root, "props/escaped", enforce_readonly=False)
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["error"]["code"], "asset_dependency_escape")
+            self.assertTrue(package.is_dir())
+
+    def test_missing_non_layer_dependency_is_rejected(self) -> None:
+        content = READY_USDA.replace(
+            'def Xform "World"\n{',
+            'def Xform "World"\n{\n    custom asset sourceFile = @missing.json@',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = DataRoot(Path(temporary) / "data")
+            root.initialize()
+            package = self._write_package(root, "props/missing", content)
+            report = accept_asset(root, "props/missing", enforce_readonly=False)
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["error"]["code"], "unresolved_asset_dependency")
+            self.assertTrue(package.is_dir())
 
     def test_partial_ready_asset_is_admitted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
