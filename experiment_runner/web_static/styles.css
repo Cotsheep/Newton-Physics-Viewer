@@ -127,7 +127,6 @@ a {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 
 h1,
@@ -140,8 +139,8 @@ p {
 h1 {
   margin-bottom: 8px;
   font-size: clamp(28px, 4vw, 48px);
-  line-height: 1.08;
-  letter-spacing: -0.035em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .page-description {
@@ -237,12 +236,11 @@ h1 {
   white-space: nowrap;
 }
 
-.asset-identity {
+.asset-source {
   overflow: hidden;
   margin-bottom: 10px;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -439,8 +437,11 @@ h1 {
 
 .case-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  font-size: 12px;
+  margin-top: 16px;
+  font-size: 14px;
 }
 
 .case-actions a {
@@ -449,6 +450,8 @@ h1 {
 }
 
 .player-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -459,13 +462,100 @@ h1 {
 .player-shell video {
   display: block;
   width: 100%;
-  max-height: 76vh;
+  max-height: 60vh;
+  align-self: start;
   background: black;
 }
 
 .player-details {
+  min-width: 0;
   padding: 20px;
   background: var(--panel);
+}
+
+.player-details h2 {
+  margin-bottom: 10px;
+  font-size: 20px;
+}
+
+.completion-time {
+  margin: 10px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.download-action {
+  display: inline-block;
+  padding: 8px 0;
+  color: var(--accent);
+  text-underline-offset: 4px;
+}
+
+.primary-action,
+.case-actions a.primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #07130f;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a:focus-visible,
+summary:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.technical-details {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.technical-details > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.technical-details h3 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+}
+
+.technical-details .metric-list {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+}
+
+.technical-details dt,
+.technical-details dd,
+.raw-record {
+  overflow-wrap: anywhere;
+}
+
+.technical-details dd,
+.raw-record {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.smoke-notice {
+  line-height: 1.65;
+}
+
+.case-copy .case-outcome {
+  color: var(--text);
+  font-size: 14px;
 }
 
 .player-details dl {
@@ -534,6 +624,32 @@ footer {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.inspection-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 16px;
+  min-width: 0;
+}
+.inspection-panel h3 { font-size: 15px; margin: 0 0 10px; }
+.inspection-panel p { line-height: 1.7; }
+.inspection-panel .measurement-note { color: var(--muted); font-size: 12px; }
+.parameter-panel { margin: 16px 22px; }
+.parameter-panel .metric-list { grid-template-columns: minmax(0, 1fr); }
+.parameter-panel .metric-list dd { margin-bottom: 10px; }
+.inspection-panel dt { overflow-wrap: anywhere; }
+.player-details .parameter-panel { margin: 18px 0 0; }
+.parameter-locations { margin-top: 14px; overflow-wrap: anywhere; font-size: 12px; }
+.parameter-locations li { margin-bottom: 8px; }
+.coverage-panel { padding: 20px 24px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: var(--radius); }
+.coverage-panel h2 { font-size: 18px; margin-top: 0; }
+.coverage-panel p, .coverage-list { font-size: 14px; line-height: 1.8; }
+.coverage-list { padding-left: 20px; color: var(--muted); }
+@media (max-width: 900px) {
+  .player-shell {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 @media (max-width: 700px) {

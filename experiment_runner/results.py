@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .profiles import get_profile
+from .observations import case_observations
 from .provenance import collect_runtime_environment, require_git_commit
 from .storage import DataRoot, atomic_write_json, atomic_write_text, read_json
 
@@ -260,7 +261,7 @@ def _copy_safe_public_value(
         target[key] = value
 
 
-def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
+def _public_case(run_id: str, case_directory: Path, template: str = "drop") -> dict[str, Any] | None:
     document = _safe_document(case_directory / "case.json")
     if document is None:
         return None
@@ -290,8 +291,13 @@ def _public_case(run_id: str, case_directory: Path) -> dict[str, Any] | None:
         "measurement_units",
         "finite",
         "physics_steps",
+        "video_duration_seconds",
+        "initial_hold_seconds",
+        "contact_policy",
+        "drop_measurement",
     ):
         _copy_safe_public_value(public, document, key)
+    public["observations"] = case_observations(document, template)
     base_url = f"/runs/{run_id}/cases/{case_directory.name}"
     for key, filename in {
         "video_url": "video.mp4",
@@ -324,7 +330,7 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
     cases = []
     if case_root.is_dir():
         for case_directory in sorted(path for path in case_root.iterdir() if path.is_dir()):
-            public_case = _public_case(run_id, case_directory)
+            public_case = _public_case(run_id, case_directory, template)
             if public_case is not None:
                 cases.append(public_case)
 
@@ -348,6 +354,8 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
         "failure_summary": status.get("failure_summary"),
         "cases": cases,
     }
+    _copy_safe_public_value(public, asset, "physics_parameters")
+    _copy_safe_public_value(public, manifest, "git_commit")
     if (run_directory / "preview.jpg").is_file():
         public["preview_url"] = f"/runs/{run_id}/preview.jpg"
     if (run_directory / "checksums.sha256").is_file():

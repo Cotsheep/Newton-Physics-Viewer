@@ -47,6 +47,7 @@ class DropScene:
     sim_time: float = 0.0
     gpu_permit: GpuExecutionPermit | None = None
     completed_physics_steps: int = 0
+    drop_observer: Any = None
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,7 @@ def create_drop_scene(
         use_mujoco_cpu=profile.use_mujoco_cpu,
         use_mujoco_contacts=profile.use_mujoco_contacts,
     )
-    return DropScene(
+    scene = DropScene(
         model=model,
         state=state,
         state_next=model.state(),
@@ -165,6 +166,10 @@ def create_drop_scene(
         solver=solver,
         gpu_permit=gpu_permit,
     )
+    from .drop_observer import DropObserver
+
+    scene.drop_observer = DropObserver(scene, profile.physics_dt)
+    return scene
 
 
 def step_drop_scene(scene: DropScene, profile: ExperimentProfile) -> None:
@@ -188,6 +193,8 @@ def step_drop_scene(scene: DropScene, profile: ExperimentProfile) -> None:
     scene.state, scene.state_next = scene.state_next, scene.state
     scene.sim_time += profile.physics_dt
     scene.completed_physics_steps += 1
+    if scene.drop_observer is not None:
+        scene.drop_observer.sample(scene)
 
 
 def _camera_bounds(bounds: AssetBounds) -> AssetBounds:
@@ -266,6 +273,7 @@ def record_drop_case(
         raise RuntimeError("MuJoCo produced a non-finite body state")
     return {
         **recording,
+        **(scene.drop_observer.result(duration_seconds) if scene.drop_observer is not None else {}),
         "initial_bounds": {
             "minimum": initial_bounds.minimum.tolist(),
             "maximum": initial_bounds.maximum.tolist(),
@@ -327,6 +335,7 @@ def simulate_drop_case_without_recording(
         )
     return {
         "duration_seconds": duration_seconds,
+        **(scene.drop_observer.result(duration_seconds) if scene.drop_observer is not None else {}),
         "physics_steps": physics_steps,
         "simulated_time_seconds": scene.sim_time,
         "wall_elapsed_seconds": wall_elapsed,

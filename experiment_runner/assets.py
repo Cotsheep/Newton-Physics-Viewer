@@ -519,12 +519,15 @@ def snapshot_asset_version(
             "asset_version_hash_mismatch",
             "The immutable asset content no longer matches its version",
         )
+    from .asset_parameters import snapshot_physics_parameters
+
     return {
         "identity": identity,
         "version": version,
         "entrypoint": ASSET_ENTRYPOINT,
         "dependencies": [asdict(record) for record in file_digests],
         "readiness": inspect_template_readiness(package_root / ASSET_ENTRYPOINT),
+        "physics_parameters": snapshot_physics_parameters(package_root / ASSET_ENTRYPOINT),
         "package_root": package_root,
     }
 

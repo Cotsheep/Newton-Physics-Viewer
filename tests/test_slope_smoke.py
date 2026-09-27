@@ -753,14 +753,14 @@ class SlopeCliAndControllerTests(unittest.TestCase):
             / "web_static"
             / "app.js"
         ).read_text(encoding="utf-8")
-        self.assertIn("非正式开发冒烟", script)
-        self.assertIn("不能作为正式物理结论", script)
+        self.assertIn("仅用于验证测试流程", script)
+        self.assertIn("本次不评价资产的物理参数是否准确", script)
         self.assertIn("Number.isFinite", script)
         self.assertIn("slope_angle_degrees", script)
         self.assertIn("displacement_along_slope", script)
         self.assertIn("development_outcome", script)
         self.assertIn("final_linear_velocity", script)
-        self.assertIn('["有限性", formatFiniteState(testCase.finite)]', script)
+        self.assertIn('["数值检查", formatFiniteState(testCase.finite)]', script)
         self.assertIn("m/s", script)
         self.assertIn("未记录", script)
 

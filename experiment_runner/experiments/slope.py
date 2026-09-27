@@ -15,6 +15,7 @@ from asset_viewer.camera import AssetBounds, compute_asset_bounds
 from ..profiles import ExperimentProfile
 from ..gpu_safety import require_cpu_smoke_profile
 from ..slope_policy import single_body_slope_smoke_error
+from ..observations import slope_displacement_observation
 from .drop import _viewer_arguments, mujoco_usd_schema_resolvers
 from .recording import configure_warp_cpu_only, record_simulation_video
 
@@ -389,6 +390,8 @@ def record_slope_case(
     initial_hold_seconds: float = INITIAL_HOLD_SECONDS,
 ) -> dict[str, Any]:
     require_cpu_smoke_profile(profile)
+    if scene.sim_time != 0.0:
+        raise ValueError("Slope observation requires a fresh scene at time zero")
     initial_scene_bounds = compute_asset_bounds(scene.model, scene.state)
     recording = record_simulation_video(
         scene,
@@ -407,17 +410,19 @@ def record_slope_case(
     body_q, body_qd = _require_finite_state(scene)
     final_position = body_q[scene.tracked_body_index, :3].copy()
     final_linear_velocity = body_qd[scene.tracked_body_index, :3].copy()
-    displacement = measure_along_slope_displacement(
-        scene.initial_position,
-        final_position,
-        geometry.down_slope,
+    observation = slope_displacement_observation(
+        scene.initial_position, final_position, geometry.down_slope,
+        body_index=scene.tracked_body_index, body_count=len(body_q),
+        end_time_seconds=scene.sim_time,
     )
+    displacement = observation["value"]
     return {
         **recording,
         "slope_angle_degrees": geometry.angle_degrees,
         "initial_position": scene.initial_position.tolist(),
         "final_position": final_position.tolist(),
         "displacement_along_slope": displacement,
+        "observations": {"along_slope_displacement": observation},
         "final_linear_velocity": final_linear_velocity.tolist(),
         "measurement_units": {
             "position": "m",
