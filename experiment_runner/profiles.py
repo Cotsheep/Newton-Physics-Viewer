@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
+from .drop_validation import DROP_VALIDATION_PROFILE
+
 
 @dataclass(frozen=True)
 class ExperimentProfile:
@@ -109,11 +111,33 @@ _PROFILE_VALUES["mujoco-warp-cuda-dt1ms-video-smoke-v1"] = replace(
     recording_mode="required",
 )
 
+_PROFILE_VALUES[DROP_VALIDATION_PROFILE] = replace(
+    _PROFILE_VALUES["mujoco-warp-cuda-dt1ms-video-smoke-v1"],
+    name=DROP_VALIDATION_PROFILE,
+    execution_tier="development_drop_validation",
+    case_duration_seconds=10.0,
+    wall_time_limit_seconds=900.0,
+    video_width=1280,
+    video_height=720,
+    preview_width=640,
+    preview_height=360,
+)
+
 PROFILES = MappingProxyType(_PROFILE_VALUES)
 
 
 _PROFILE_AVAILABILITY = MappingProxyType(
     {
+        DROP_VALIDATION_PROFILE: {
+            "status": "development_validation_only",
+            "runnable": True,
+            "entrypoint": "validate-drop-gpu",
+            "entrypoints": ("validate-drop-gpu",),
+            "message": (
+                "One explicitly selected low/medium/high 10-second case per externally "
+                "scheduled trial, with required GPU recording; formal validation pending."
+            ),
+        },
         "mujoco-native-dt1ms-v1": {
             "status": "reserved_not_runnable",
             "runnable": False,

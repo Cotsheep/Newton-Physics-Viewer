@@ -1,6 +1,6 @@
 # 本地 CPU 冒烟与结果页使用说明
 
-状态：本地摔落与固定坡度两条 CPU 冒烟链路可运行；独立 GPU integration smoke 已实现但未在目标集群运行
+状态：本地摔落与固定坡度两条 CPU 冒烟链路可运行；独立 GPU 集成冒烟及 GPU 录像已在指定节点用测试资产验证。最新范围见 [当前状态](../deployment/CURRENT_STATUS.md)。
 适用范围：开发验证，不是正式 GPU 资产物理结论
 
 这条链路已经能够完成：
@@ -13,8 +13,7 @@
 6. 在资产封面式 Web UI 中直接播放工况录像；
 7. 通过只绑定回环地址的只读服务访问结果，MP4 支持拖动进度条所需的字节范围读取。
 
-正式 GPU 配置 `mujoco-native-dt1ms-v1` 已登记，但正式 GPU 批次仍保持关闭。只有管理员提供
-不可由个人账号修改的 GPU 授权策略，并完成远程集成验收后，才会开放正式运行。
+正式 GPU 配置 `mujoco-native-dt1ms-v1` 已登记，但正式 GPU 批次仍保持关闭。单工况 GPU 验证不自动开放正式运行，仍需完成正式多工况实现、适用的资源策略和验收。
 
 独立的 `mujoco-warp-cuda-dt1ms-integration-smoke-v1` 不属于正式配置。它只允许在
 Determined 分配单 GPU 的 trial 中执行一个 1 秒中等高度摔落，始终
@@ -164,18 +163,14 @@ GPU 命令不属于上述本地用法。它只能由 Determined trial 使用预�
   校验、容器逻辑 `cuda:0` 选择、1 秒/单工况/300 秒内部上限、审计元数据和结构化结果；
 - 已在 Windows 本地用 mock/CPU 验证：零卡、多卡、单卡选择、CUDA 初始化失败不回退、CPU
   仍隐藏 CUDA、profile/CLI、metadata unknown、1000 步 worker 与结果协议；
-- 历史文档记载过 Determined 非仿真环境探针，但本交付没有可复核的目标运行产物；
-  仓库无法证明当前版本在服务器上已验收，旧探针中的系统 Python 3.10.12 也不满足项目要求；
-- 尚未验证：在目标 trial 中用 Newton/MJWarp 推进 GPU 物理、GPU 无头 OpenGL/EGL 录像、
-  正式 GPU 物理试验、多高度正式摔落和正式坡度实验。
+- 已在目标 trial 验证：测试小方块的 Newton/MJWarp CUDA 物理、独立录像入口的 NVIDIA EGL 渲染、视频校验和人工播放；范围限于指定节点及环境，详见 [当前状态](../deployment/CURRENT_STATUS.md)；
+- 尚未完成：首个真实资产接入、其他节点环境验证、正式 GPU 物理试验、多高度正式摔落和正式坡度试验。
 
 GPU 冒烟不调用 CPU safety 路径，不隐藏 CUDA，也不修改全局设备可见性。反过来，现有 CPU
 入口仍在导入仿真栈前设置 `CUDA_VISIBLE_DEVICES=-1`，Linux 继续要求 Mesa 软件 OpenGL。
 
-当前 GPU 容器渲染能力未知，所以 GPU 冒烟不尝试录像。成功结果复用 manifest、status、
-case、run.log 和 checksums 结构，明确写入 `gpu_headless_recording_not_validated`；没有真实
-preview、poster、final 或 MP4 时不会创建这些文件。Determined 人工示例见
-[`../deployment/README.md`](../deployment/README.md)。
+默认 GPU 冒烟仍不录像；它保留原结构化协议及历史兼容字段，不创建不存在的媒体文件。
+`--record-video` 选择独立配置，要求 GPU 渲染和实际取帧成功，失败时保留诊断；不能因默认入口的历史字段推断录像尚未实现。具体环境适配见 [GPU 录像说明](../deployment/GPU_VIDEO_SMOKE.md)。
 
 ## 6. 当前尚未开放
 

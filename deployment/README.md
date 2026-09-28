@@ -1,8 +1,8 @@
 # Determined 单 GPU 集成冒烟交付说明
 
-新增可选的 [GPU 带录像冒烟入口](GPU_VIDEO_SMOKE.md)：`smoke-drop-gpu --record-video`，需要目标容器的 EGL 渲染验证。下文无录像限制描述的是默认入口；默认行为不变。
+支持默认无录像及独立的 [GPU 带录像入口](GPU_VIDEO_SMOKE.md)：`smoke-drop-gpu --record-video`。两条路径均有指定节点上的实际运行证据，最新范围见 [当前状态](CURRENT_STATUS.md)。默认不录像的行为保留。
 
-当前交付范围是第一次真实 GPU integration smoke 的代码候选：单 trial、单 GPU、单个中等高度摔落、1000 步、非正式、不录像。正式 profile `mujoco-native-dt1ms-v1` 仍为 `reserved_not_runnable`。本入口尚未在目标集群验收，不能把本地 fake/mock 测试当作 GPU 执行证明。
+当前交付范围是单 trial、单 GPU、单个中等高度摔落、1000 步的非正式集成入口，可显式要求 GPU 录像。测试资产已完成目标节点的执行、文件校验和播放确认；真实资产和正式批次仍待验证。正式 profile `mujoco-native-dt1ms-v1` 继续为 `reserved_not_runnable`，本地 fake/mock 测试仍不能替代目标运行。
 
 仓库不连接、提交、激活或终止 Determined experiment，不安装系统服务，不修改 SSH、Tailscale 或全局环境。操作员使用 [8 分钟配置模板](determined-gpu-smoke-8min.yaml) 人工提交。
 
@@ -26,7 +26,7 @@ bind_mounts:
 
 这时 `NEWTON_TEST_PYTHON` 指向第二个挂载内的解释器。数据挂载与环境挂载必须分开；数据、环境和源码目录不能互相覆盖。SSH shell 中激活的 venv 不会自动出现在 trial。venv 常含绝对路径、解释器符号链接及 native extension，不能直接把 Windows venv 搬到 Linux，也不能任意改变 Linux venv 的绝对路径。管理员须确认 Python 基础解释器路径、系统、glibc、CPU 架构、CUDA 用户态库和宿主驱动兼容性；环境只读，但运行用户仍须有可写的临时目录和 Warp 编译缓存目录。
 
-trial 只检查并直接使用已经存在的 `NEWTON_TEST_PYTHON`。执行前检查 Python 3.12 与锁定运行依赖的完整传递版本集合，失败则在 Warp GPU 枚举前退出。禁止在 slot 内执行 `uv sync`、普通 `uv run`、`pip install` 或下载依赖。
+trial 只检查并直接使用已经存在的 `NEWTON_TEST_PYTHON`。执行前检查 Python 3.12 与锁定运行依赖的完整传递版本集合，失败则在 Warp GPU 枚举前退出。项目入口禁止在 slot 内执行 `uv sync`、普通 `uv run`、`pip install` 或下载依赖。平台自己的启动依赖处理另行看待，不应误记为项目环境安装。
 
 ## 2. 导出确定的源码
 
@@ -40,7 +40,9 @@ python -B -m experiment_runner.release <new-source-export-directory>
 
 导出器只读取 Git，不提交或部署。它读取指定 commit 的已跟踪文件内容，拒绝覆盖已有目录，并生成 `.newton-source.json`，记录完整 commit 及运行源码、静态页面、依赖声明的 SHA-256。所有 CPU/GPU manifest 另外记录工作树状态与源码指纹。GPU trial 在没有 `.git` 时校验这份导出清单；不要移除 `.newton-source.json`，也不要用 `.detignore` 排除清单或运行文件。该清单保证传输和内容一致性，不是签名或不可伪造认证。
 
-上传目录只使用上述源码导出；不要包含本机 venv、私钥、配置或真实数据集。资产仅从管理员批准的数据挂载读取，使用已验收入库且 `drop` 就绪的完整 identity 和 64 位版本。模板内只保存占位符，不保存真实服务器地址、账号、路径或资产版本。
+上传目录只使用上述源码导出；不要包含本机 venv、私钥、配置或真实数据集。资产仅从管理员批准的数据挂载读取，使用已验收入库且 `drop` 就绪的完整 identity 和 64 位版本。模板内只保存占位符，不保存真实服务器地址、账号、路径或资产版本。具体环境笔记和配置副本保存在 `.gitignore` 已覆盖的 `deployment/local/`；该目录不随 Git 部署。
+
+同一代码版本可复用同一源码导出，只改资产或任务配置时无需重新导出。每次创建 experiment 仍上传该源码上下文，Python 环境、图形库和资产通过挂载复用。源码变更则需新的干净提交和新的导出目录；不覆盖旧导出。
 
 ## 3. 人工复核配置与 paused 提交
 
@@ -48,7 +50,7 @@ python -B -m experiment_runner.release <new-source-export-directory>
 
 | 配置 | 要求 |
 | --- | --- |
-| `environment.image` | 管理员批准、固定版本或 digest 的 GPU 镜像 |
+| `environment.image` | 已获准的 GPU 镜像，优先固定版本或 digest；用户明确接受浮动标签时记录限制，不为此索取管理凭据 |
 | `resources.resource_pool` | 管理员批准的单 GPU 资源池 |
 | 数据挂载的 host/container path | 已批准、运行用户拥有、固定布局完整、可写，与源码隔离 |
 | `NEWTON_DATA_ROOT` | 与数据挂载的 container path 一致 |
@@ -75,7 +77,7 @@ det experiment create --paused <reviewed-config.yaml> <new-source-export-directo
 
 ## 4. GPU 执行边界与产物验收
 
-资产完整性/readiness、Determined 元数据、源码及依赖必须先通过检查；之后才允许 Warp GPU 枚举、逻辑 `cuda:0` context、UUID 一致性检查、Newton 模型/solver 和固定 1000 步。`DET_SLOT_IDS` 必须是恰好一个非负整数的 JSON 列表；字符串、bool、负数或多 slot 均拒绝。共享几何测量和场景构造必须收到安全门签发的显式强类型许可，正式 profile 即使有许可也拒绝。录像共享函数仅允许 CPU 冒烟。
+资产完整性/readiness、Determined 元数据、源码及依赖必须先通过检查；之后才允许 Warp GPU 枚举、逻辑 `cuda:0` context、UUID 一致性检查、Newton 模型/solver 和固定 1000 步。`DET_SLOT_IDS` 必须是恰好一个非负整数的 JSON 列表；字符串、bool、负数或多 slot 均拒绝。共享几何测量和场景构造必须收到安全门签发的显式强类型许可，正式 profile 即使有许可也拒绝。原 CPU 录像函数仍仅接受 CPU 冒烟；独立 GPU recorder 只接受固定 video-smoke profile，并验证 NVIDIA EGL 与已分配设备身份。
 
 环境变量及许可均是防误用机制；资源隔离由 Determined 和 NVIDIA container runtime 提供。只允许逻辑 `cuda:0`，不接受宿主机编号、不选择空闲卡、不回退 CPU。Warp UUID 正常时必须与分配 UUID 规范化匹配；不匹配或非空非法格式在 Newton 模型创建前失败。UUID 缺失只能记 `unavailable` 和 warning，不能伪造 matched。
 
@@ -87,9 +89,10 @@ det experiment create --paused <reviewed-config.yaml> <new-source-export-directo
 2. `status.json` 和 `cases/001-medium-gpu-integration-smoke/case.json` 是 succeeded，manifest 退出码为0，各处 `authoritative=false`；完整 commit、源码指纹、依赖版本和资产版本与提交配置一致。
 3. manifest 与 case 中的 allocation、逻辑设备、allocated/runtime UUID 和验证状态一致；正常设备应为 matched。unavailable 虽允许诊断运行，但必须明确记录为仍缺设备身份验证证据。
 4. `completed_physics_steps=1000`、`attempted_physics_step=1000`、`solver_step_completed=true`、`gpu_physics_completed=true`、`actual_compute_device=cuda:0`、`cuda_used=true`、`cpu_fallback=false`，case `finite=true`。
-5. `run.log`、`checksums.sha256` 存在且校验通过。仅保存结构化产物；`recording.status=not_attempted`，没有 preview、poster、final、asset-cover 或 MP4。
+5. `run.log`、`checksums.sha256` 存在且校验通过。默认入口仅保存结构化产物，`recording.status=not_attempted`。带录像入口则必须 `recording.status=succeeded`，校验 MP4、poster、final、preview，并检查 NVIDIA vendor 和 EGL/CUDA 设备匹配。
+6. 录像使用 ffprobe 读取实际帧数、尺寸、编码和时长，并人工查看内容；case 中的帧数或文件存在本身不能替代这两步。固定视频规格见 [录像说明](GPU_VIDEO_SMOKE.md)。
 
-结果只证明集成链路，不证明资产物理真实性或正式试验有效性。目标 GPU 无头 OpenGL/EGL 录像仍未验证。
+结果只证明受测资产在特定环境中的集成链路，不证明资产物理真实性或正式试验有效性。更换资产、驱动、节点或图形环境时须核对相应前置条件。
 
 ## 5. 服务器只读就绪检查与结果浏览
 
@@ -107,8 +110,28 @@ Windows 菜单先检查远端命令，再调用结构化 readiness。报告缺�
 
 ## 6. 当前验证状态
 
-- 本地自动测试覆盖安全门及底层绕过、UUID匹配/异常/缺失、首步失败/同步失败/中断/1000步完成、目录隔离、多材质readiness、源码导出、readiness协议和 YAML 结构。
-- GPU相关推进使用 fake/mock；默认测试中的CPU导入、建模和小步检查不等于真实CPU录像E2E。
-- 两项真实CPU E2E只在显式opt-in时运行；修复轮未运行，后续用户授权的WSL验收已实际通过，见[2026-09-13验收记录](ACCEPTANCE_RUN_2026-09-13.md)。
-- 历史文档记载过非仿真分配探针，但没有随本交付提供可复核的目标运行产物，不能作为当前版本服务器或GPU验收证据。
-- 本轮未连接真实服务器或Determined，未初始化真实CUDA，未提交/激活experiment，未commit或push。本版本仍须完成干净commit、实际环境参数复核与第一次目标trial验收。
+以 [当前状态与下一步](CURRENT_STATUS.md) 为准。历史本地记录见 [2026-09-13 验收记录](ACCEPTANCE_RUN_2026-09-13.md)，其中当日未提交和未运行 GPU 的描述保留为历史，不代表今天仍受相同阻塞。
+
+本地 GPU 单元测试使用 fake/mock；实际 GPU 证据来自用户手动执行的 Determined trial、结果校验和播放确认。下一步是选定并复制一个真实资产，不重复已完成的小方块链路。
+
+## 手动查看结果
+
+以下是两个不同终端中的命令模板，实际协作时每次只指导一步。无需 GPU 分配，但开发容器必须能够读取共享结果。
+
+开发容器终端在代码目录中启动服务：
+
+```text
+<prepared-python> -B -m experiment_runner.cli serve-results --data-root <shared-data-root> --host 127.0.0.1 --port 8765
+```
+
+服务准备静态页面和索引，然后只读提供网页、JSON 和文件；HTTP API 不支持提交、修改或删除。该进程不重新仿真或渲染，不申请 GPU。个人开发容器不一定是集群登录节点。
+
+用户电脑上的另一个终端建立转发：
+
+```text
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8765:127.0.0.1:8765 <user>@<development-container-address>
+```
+
+浏览器打开 `http://127.0.0.1:8765/`。第一个回环地址属于用户电脑，转发目标回环地址属于 SSH 远端开发容器。视频来自共享存储，在本地浏览器解码和显示。
+
+手动方式需要两个终端保持运行，关闭任一终端会中断查看，但不会删除结果或停止已独立提交的 Determined 任务。跨对话不假定两个进程仍存活；有访问问题时只检查当前服务和隧道，不重新运行仿真。菜单自动浏览的 readiness、远端 PATH 和个人配置要求独立适用，不能把手动通道成功当作自动菜单已验收。

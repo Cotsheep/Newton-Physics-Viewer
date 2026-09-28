@@ -342,6 +342,31 @@ def run_gpu_smoke_drop(
     gpu_runtime: Any | None = None,
     record_video: bool = False,
 ) -> dict[str, Any]:
+    return _run_gpu_drop_case(
+        data_root, asset_identity=asset_identity, asset_version=asset_version,
+        git_commit=git_commit, gpu_runtime=gpu_runtime, record_video=record_video,
+    )
+
+
+def run_gpu_drop_validation(
+    data_root: DataRoot, *, asset_identity: str, asset_version: str, height: str,
+    git_commit: str | None = None, gpu_runtime: Any | None = None,
+) -> dict[str, Any]:
+    from .drop_validation import drop_validation_case
+
+    case = drop_validation_case(height)  # Reject invalid requests before any side effect.
+    return _run_gpu_drop_case(
+        data_root, asset_identity=asset_identity, asset_version=asset_version,
+        git_commit=git_commit, gpu_runtime=gpu_runtime, record_video=True,
+        validation_case=case,
+    )
+
+
+def _run_gpu_drop_case(
+    data_root: DataRoot, *, asset_identity: str, asset_version: str,
+    git_commit: str | None = None, gpu_runtime: Any | None = None,
+    record_video: bool = False, validation_case: Any = None,
+) -> dict[str, Any]:
     """Run one bounded, non-authoritative MJWarp CUDA integration drop."""
 
     from .gpu_safety import (
@@ -353,7 +378,11 @@ def run_gpu_smoke_drop(
 
     # Validation is deliberately ordered so neither Warp discovery nor CUDA context
     # creation can happen before all non-GPU prerequisites and the trial gate pass.
-    profile = get_profile(GPU_VIDEO_SMOKE_PROFILE if record_video else GPU_SMOKE_PROFILE)
+    from .drop_validation import DROP_VALIDATION_PROFILE
+
+    profile = get_profile(DROP_VALIDATION_PROFILE if validation_case else
+                          GPU_VIDEO_SMOKE_PROFILE if record_video else GPU_SMOKE_PROFILE)
+    clearance_scale = validation_case.clearance_scale if validation_case else 1.0
     if profile.authoritative or profile.use_mujoco_cpu:
         raise RuntimeError("The GPU integration smoke profile safety boundary is invalid")
     duration = profile.case_duration_seconds
@@ -391,10 +420,10 @@ def run_gpu_smoke_drop(
         templates=["drop"],
         profile_name=profile.name,
         request_summary={
-            "purpose": "development_gpu_integration_smoke",
+            "purpose": "development_drop_validation" if validation_case else "development_gpu_integration_smoke",
             "authoritative": False,
             "single_case": True,
-            "drop_clearance_scale": 1.0,
+            "drop_clearance_scale": clearance_scale,
             "case_duration_seconds": duration,
             "wall_time_limit_seconds": profile.wall_time_limit_seconds,
             "device_selection": "determined_trial_gate_then_container_logical_cuda_0",
@@ -458,8 +487,8 @@ def run_gpu_smoke_drop(
     )
     _update_manifest(run_directory, environment=environment)
 
-    case_id = "drop-medium-gpu-integration-smoke"
-    case_relative = "cases/001-medium-gpu-integration-smoke"
+    case_id = validation_case.case_id if validation_case else "drop-medium-gpu-integration-smoke"
+    case_relative = f"cases/001-{validation_case.height}-validation" if validation_case else "cases/001-medium-gpu-integration-smoke"
     case_directory = run_directory / case_relative
     case_directory.mkdir()
     atomic_write_text(
@@ -475,13 +504,14 @@ def run_gpu_smoke_drop(
     case_document: dict[str, Any] = {
         "schema_version": 1,
         "case_id": case_id,
-        "label": "中等高度（GPU 集成冒烟，非正式）",
+        "label": validation_case.label if validation_case else "中等高度（GPU 集成冒烟，非正式）",
         "git_commit": git_commit,
         "source": source_evidence,
         "status": "running",
         "condition": {
-            "clearance_scale": 1.0,
-            "case_scope": "single_medium_height_drop_only",
+            "clearance_scale": clearance_scale,
+            "case_scope": "three_height_drop_validation_v1" if validation_case else "single_medium_height_drop_only",
+            **({"height_level": validation_case.height} if validation_case else {}),
             "initial_velocity_mps": [0.0, 0.0, 0.0],
             "initial_angular_velocity_rps": [0.0, 0.0, 0.0],
         },
@@ -514,6 +544,8 @@ def run_gpu_smoke_drop(
         },
         "authoritative": False,
         "interpretation": (
+            "One three-height development validation case; formal GPU acceptance is pending."
+            if validation_case else
             "Development integration smoke only; it validates a bounded CUDA execution "
             "path and does not produce an authoritative physics conclusion."
         ),
@@ -605,7 +637,7 @@ def run_gpu_smoke_drop(
         geometry = measure_drop_geometry(
             asset_path,
             profile=profile,
-            clearance_scale=1.0,
+            clearance_scale=clearance_scale,
             gpu_permit=gpu_permit,
         )
         case_document["condition"].update(
@@ -626,7 +658,14 @@ def run_gpu_smoke_drop(
             clearance=geometry.clearance,
             measured_bounds=geometry.initial_bounds,
             gpu_permit=gpu_permit,
+            **({"neutral_reference": True} if validation_case else {}),
         )
+        if validation_case:
+            from .experiments.drop_reference import attach_drop_reference
+
+            reference = attach_drop_reference(scene, geometry)
+            case_document["condition"].update(reference)
+            atomic_write_json(case_directory / "case.json", case_document)
         actual_device = require_scene_on_logical_gpu(scene)
         persist_execution_state(
             model_device_verified=True,

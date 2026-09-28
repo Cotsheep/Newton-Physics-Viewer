@@ -126,6 +126,9 @@ def _headless_viewer(
 def _render_frame(viewer: newton.viewer.ViewerGL, scene: Any) -> np.ndarray:
     viewer.begin_frame(scene.sim_time)
     viewer.log_state(scene.state)
+    reference = getattr(scene, "scale_reference", None)
+    if reference is not None:
+        reference.draw(viewer)
     viewer.end_frame()
     return viewer.get_frame(render_ui=False).numpy()
 

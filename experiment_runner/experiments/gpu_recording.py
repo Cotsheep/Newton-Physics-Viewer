@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from ..gpu_safety import GpuExecutionPermit, require_gpu_execution_permit, require_scene_on_logical_gpu
 from ..profiles import ExperimentProfile, get_profile
+from ..drop_validation import DROP_VALIDATION_PROFILE
 
 
 class GpuRecordingError(RuntimeError):
@@ -187,7 +188,7 @@ def record_gpu_drop_case(
     """Render the initial hold and every 20th completed step of the real GPU case."""
     require_gpu_execution_permit(scene.gpu_permit, profile)
     require_scene_on_logical_gpu(scene)
-    if profile != get_profile("mujoco-warp-cuda-dt1ms-video-smoke-v1"):
+    if profile not in (get_profile("mujoco-warp-cuda-dt1ms-video-smoke-v1"), get_profile(DROP_VALIDATION_PROFILE)):
         raise ValueError("GPU recording requires the fixed video smoke profile")
     if duration_seconds != profile.case_duration_seconds or scene.completed_physics_steps:
         raise ValueError("GPU recording permits exactly one fresh fixed-duration case")
@@ -223,7 +224,9 @@ def record_gpu_drop_case(
         viewer.set_model(scene.model)
         viewer.set_camera(wp.vec3(1.0, -1.0, 1.0), pitch=-22.0, yaw=42.0)
         frame_camera_on_bounds(
-            viewer.camera, _camera_bounds(compute_asset_bounds(scene.model, scene.state)), padding=1.45,
+            viewer.camera,
+            scene.scale_reference.camera_bounds if getattr(scene, "scale_reference", None) is not None
+            else _camera_bounds(compute_asset_bounds(scene.model, scene.state)), padding=1.45,
         )
         viewer.show_visual = True
         viewer.show_collision = False

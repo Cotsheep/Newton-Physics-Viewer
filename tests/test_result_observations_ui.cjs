@@ -65,3 +65,41 @@ test("no impact, no liftoff and unfinished rebound never look like a zero reboun
     assert.equal(context.observationValue(data, "first_rebound_height"), label);
   }
 });
+
+function validationRun(level, overrides = {}) {
+  return {template:"drop", profile_name:"mujoco-warp-cuda-drop-validation-10s-v1",
+    asset_version:"a".repeat(64), git_commit:"b".repeat(40), run_id:`run-${level}`,
+    cases:[{case_id:`drop-${level}-validation`, status:"succeeded", finite:true,
+      physics_steps:10000, duration_seconds:10, video_duration_seconds:10.5, video_url:"/fixture.mp4",
+      condition:{height_level:level, clearance_scale:{low:.5,medium:1,high:2}[level],
+        case_scope:"three_height_drop_validation_v1", reference_policy:"asset_priority_over_ground_v1"}}],
+    ...overrides};
+}
+test("drop coverage groups matching versions and code, retaining missing levels", () => {
+  const runs = [validationRun("low"), validationRun("medium"), validationRun("high", {asset_version:"c".repeat(64)})];
+  const groups = context.dropValidationGroups({runs});
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].cases.low.complete, true);
+  assert.equal(groups[0].cases.high, undefined);
+  assert.equal(groups[1].cases.high.complete, true);
+  assert.match(context.caseTitle(runs[0], runs[0].cases[0]), /低档/);
+});
+test("old smoke, failed latest attempts and incomplete records cannot fill coverage", () => {
+  const failed = validationRun("low");
+  failed.cases[0].status = "failed";
+  const short = validationRun("medium");
+  short.cases[0].physics_steps = 1000;
+  const old = validationRun("high", {profile_name:"mujoco-warp-cuda-dt1ms-video-smoke-v1"});
+  const [group] = context.dropValidationGroups({runs:[failed, validationRun("low"), short, old]});
+  assert.equal(group.cases.low.complete, false);
+  assert.equal(group.cases.medium.complete, false);
+  assert.equal(group.cases.high, undefined);
+});
+test("code or reference-condition changes remain separate comparison groups", () => {
+  const changed = validationRun("high");
+  changed.cases[0].condition.reference_policy = "unknown";
+  const groups = context.dropValidationGroups({runs:[validationRun("low"),
+    validationRun("medium", {git_commit:"c".repeat(40)}), changed]});
+  assert.equal(groups.length, 3);
+  assert.equal(groups[2].cases.high.complete, false);
+});

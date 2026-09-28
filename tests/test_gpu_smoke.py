@@ -467,7 +467,7 @@ class RunnerHarness:
         self.stack.close()
         self.temporary.cleanup()
 
-    def run(self, environment_overrides: dict[str, str] | None = None, *, record_video=False):
+    def run(self, environment_overrides: dict[str, str] | None = None, *, record_video=False, validation_height=None):
         from experiment_runner.smoke import run_gpu_smoke_drop
 
         environment = dict(
@@ -483,6 +483,12 @@ class RunnerHarness:
             # Fake scene substitutes the real constructor, which attaches this permit.
             if "DET_TASK_ID" in environment:
                 self.scene.gpu_permit = issue_gpu_execution_permit()
+            if validation_height is not None:
+                from experiment_runner.smoke import run_gpu_drop_validation
+                return run_gpu_drop_validation(
+                    self.root, asset_identity="fixtures/box", asset_version="a" * 64,
+                    height=validation_height, gpu_runtime=self.runtime,
+                )
             return run_gpu_smoke_drop(
                 self.root,
                 asset_identity="fixtures/box",

@@ -48,6 +48,7 @@ class DropScene:
     gpu_permit: GpuExecutionPermit | None = None
     completed_physics_steps: int = 0
     drop_observer: Any = None
+    scale_reference: Any = None
 
 
 @dataclass(frozen=True)
@@ -140,17 +141,41 @@ def create_drop_scene(
     clearance: float,
     measured_bounds: AssetBounds,
     gpu_permit: GpuExecutionPermit | None = None,
+    neutral_reference: bool = False,
 ) -> DropScene:
     configure_warp_for_profile(profile, gpu_permit=gpu_permit)
     if clearance <= 0.0 or not math.isfinite(clearance):
         raise ValueError("clearance must be finite and greater than zero")
     z_offset = clearance - float(measured_bounds.minimum[2])
+    scene = _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference)
+    if neutral_reference:
+        if scene.drop_observer.reason:
+            raise ValueError(f"Drop validation requires measurable collision geometry: {scene.drop_observer.reason}")
+        actual = scene.drop_observer.geometry.measure(scene.state.body_q.numpy())
+        # Collision support may differ from the initial planning AABB. Rebuild
+        # once with a whole-asset translation; never edit joint-relative poses.
+        if abs(actual - clearance) > 1e-6:
+            scene = _build_drop_scene(asset_path, profile, z_offset + clearance - actual, gpu_permit, True)
+        actual = scene.drop_observer.geometry.measure(scene.state.body_q.numpy())
+        if abs(actual - clearance) > 1e-6:
+            raise ValueError("Could not place collision geometry at the requested release clearance")
+    return scene
+
+
+def _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference):
     args = _viewer_arguments(asset_path, z_offset=z_offset, profile=profile)
     model, state, _joint_panel = build_model(
         args,
         asset_path,
         usd_schema_resolvers=mujoco_usd_schema_resolvers(),
     )
+    if neutral_reference:
+        from .drop_reference import set_neutral_ground_priority
+
+        set_neutral_ground_priority(model)
+        model.joint_qd.zero_()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        state.body_qd.zero_()
     solver = newton.solvers.SolverMuJoCo(
         model,
         iterations=profile.iterations,

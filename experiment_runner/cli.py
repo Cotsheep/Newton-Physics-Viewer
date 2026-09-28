@@ -223,6 +223,19 @@ def _add_data_root_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _command_validate_drop_gpu(args: argparse.Namespace) -> int:
+    from .smoke import run_gpu_drop_validation
+
+    result = run_gpu_drop_validation(
+        _data_root(args), asset_identity=args.identity, asset_version=args.version,
+        height=args.height, git_commit=args.git_commit,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("已完成所选档位的 10 秒开发验证；请检查录像与量化观察。")
+    print("三档须分别执行、逐档验收；正式物理配置尚未开放。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Newton-Test server-side storage, asset, and result commands."
@@ -350,6 +363,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_data_root_arguments(gpu_smoke)
     gpu_smoke.set_defaults(handler=_command_smoke_drop_gpu)
+    validation = subparsers.add_parser(
+        "validate-drop-gpu", help="Run one selected low/medium/high 10-second GPU validation case with video.",
+        description="One case per externally scheduled Determined single-GPU trial. No automatic submission or next-case execution. Development only.",
+    )
+    validation.add_argument("identity")
+    validation.add_argument("version")
+    validation.add_argument("--height", required=True, choices=("low", "medium", "high"))
+    validation.add_argument("--git-commit", default=None)
+    _add_data_root_arguments(validation)
+    validation.set_defaults(handler=_command_validate_drop_gpu)
     return parser
 
 

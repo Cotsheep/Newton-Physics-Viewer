@@ -189,12 +189,14 @@ def require_gpu_execution_permit(permit: GpuExecutionPermit | None, profile: Any
         raise GpuSmokeSafetyError("A gate-issued GPU execution permit is required before CUDA")
     if profile is not None:
         from .profiles import get_profile
+        from .drop_validation import DROP_VALIDATION_PROFILE
 
         if profile not in (
             get_profile("mujoco-warp-cuda-dt1ms-integration-smoke-v1"),
             get_profile("mujoco-warp-cuda-dt1ms-video-smoke-v1"),
+            get_profile(DROP_VALIDATION_PROFILE),
         ):
-            raise GpuSmokeSafetyError("Only the fixed GPU integration smoke profile is permitted")
+            raise GpuSmokeSafetyError("Only registered bounded GPU development profiles are permitted")
 
 
 def require_cpu_smoke_profile(profile: Any) -> None:

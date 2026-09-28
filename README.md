@@ -2,7 +2,7 @@
 
 Newton-Test 用于查看 URDF、USD、GLB 资产，并逐步建立基于 Newton–MuJoCo 的 3D 资产物理合理性检查流程。项目默认物理求解器为 MuJoCo。
 
-当前版本已经打通桌面资产查看、本地 CPU 摔落与固定坡度冒烟、资产验收入库和浏览器结果查看，并实现了一个等待目标集群验证的独立 GPU integration smoke 入口；正式服务器 GPU 批次仍未开放。README 会把“已经实现”“已经验证”和“正式能力”分开说明。
+当前版本已打通桌面资产查看、本地 CPU 冒烟、资产验收入库，并在指定 Determined 节点完成小测试资产的 GPU 摔落、NVIDIA EGL 渲染录像、共享存储校验和手动 SSH 结果页播放。真实资产验证是下一步，正式 GPU 批次仍未开放。最新范围与续接点见 [当前状态](deployment/CURRENT_STATUS.md)。
 
 ## 当前能力
 
@@ -13,11 +13,11 @@ Newton-Test 用于查看 URDF、USD、GLB 资产，并逐步建立基于 Newton�
 | 本地 CPU 摔落冒烟 | 可用 | 只运行一个中等高度工况，用于验证代码和结果链路 |
 | 本地 CPU 坡度冒烟 | 可用 | 只运行固定 25°、2 秒的单案例开发工况，不产生正式摩擦结论 |
 | 本地结果 Web UI | 可用 | 按资产封面组织结果，在页面中直接播放工况录像 |
-| 单 GPU 摔落 integration smoke | 已实现，目标集群未验证 | 只允许 Determined trial 内一个中等高度、1 秒、非正式结构化工况，不开放录像或参数扫描 |
-| 单 GPU 带录像冒烟 | 可选入口，目标渲染待验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/GPU_VIDEO_SMOKE.md) |
-| SSH 远程结果浏览 | 可用，但服务器需预先部署 | 经 Tailscale 网络和个人 SSH 身份建立按需只读隧道 |
+| 单 GPU 摔落 integration smoke | 指定节点测试资产已验证 | Determined trial 内一个中等高度、1 秒、非正式工况；默认不录像，不开放参数扫描 |
+| 单 GPU 带录像冒烟 | 指定节点测试资产已验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/GPU_VIDEO_SMOKE.md) |
+| SSH 远程结果浏览 | 手动服务和隧道已验证 | 菜单自动会话仍需其独立前置配置；不等同于本次手动查看 |
 | 服务器就绪检查 | 已实现，本地验证 | `check-readiness --json` 检查环境、存储、编码和回环端口；不导入仿真栈或探测 GPU |
-| 正式 GPU 批次 | 未开放 | 等待管理员控制的 GPU 授权策略和远程集成验收 |
+| 正式 GPU 批次 | 未开放 | 单工况集成验证不替代正式策略、多工况实现和验收 |
 | 正式多高度摔落、多角度坡度试验 | 未开放 | 当前菜单只提供两个非正式 CPU 单案例冒烟入口 |
 | Web UI 提交或删除结果 | 未开放 | 当前 Web UI 只读，不提供任务提交、回收或永久删除 |
 
@@ -98,7 +98,7 @@ Windows 也可以直接双击仓库根目录的 `newton-test.cmd`。该文件只
 
 入口 USD 引用的 mesh、纹理和其他 USD 文件也必须位于同一个资产包中。选择菜单第 2 项后，程序会自动扫描可验收资产，不要求手写内部路径。
 
-验收会生成带完整 Git commit 的报告，并把通过至少一个试验模板检查的内容作为不可变资产版本放入 `assets`。资产可能处于“部分就绪”状态，例如能够运行摔落检查，但缺少坡度试验所需的摩擦属性。
+先把完整资产包复制到 inbox，保留源目录。验收会生成带完整 Git commit 的报告，并把通过至少一个试验模板检查的 inbox 暂存副本原子移动到 `assets`，成为不可变资产版本。资产可能处于“部分就绪”状态，例如能够运行摔落检查，但缺少坡度试验所需的摩擦属性。
 
 ### 运行本地 CPU 冒烟
 
@@ -139,11 +139,11 @@ OpenGL，并在推进物理时间前验证渲染器为软件实现；验证失�
 
 GPU 入口还要求锁定依赖，以及干净且匹配的 Git checkout 或经 SHA-256 校验的源码导出；脏工作树不作为可部署版本。导出方法、镜像内环境与独立只读环境挂载的区别，以及首次实际运行验收条件均见[部署说明](deployment/README.md)。
 
-目标容器的 GPU 无头 OpenGL/EGL 录像链路尚未验证。当前入口只保存真实的 manifest、status、case、日志和 checksums，并明确记录 `recording.status=not_attempted`；不会套用 CPU 的 Mesa 软件渲染边界，也不会伪造 preview、poster、final 或 MP4。Determined 示例使用显式镜像/资源池/挂载占位符、完整 commit 和预先准备好的 Python 3.12；trial 内不会同步依赖。完整部署边界见 [deployment/README.md](deployment/README.md)。
+默认无录像入口只保存 manifest、status、case、日志和 checksums，记录 `recording.status=not_attempted`。独立 `--record-video` 路径已在指定节点验证 NVIDIA EGL 渲染与实际视频输出；不会回退为 CPU 软件渲染。该验证仅覆盖测试资产及当时环境，不外推到整个资源池。Determined 示例使用显式镜像/资源池/挂载占位符、完整 commit 和预先准备好的 Python 3.12；trial 内不会同步依赖。完整部署边界见 [deployment/README.md](deployment/README.md)。
 
 ## 远程结果浏览
 
-远程结果浏览需要满足：
+菜单自动远程结果浏览需要满足：
 
 1. Windows 已能通过 Tailscale 地址和个人 SSH 配置登录服务器；
 2. 服务器已由操作者按部署文档手动准备好锁定环境；
@@ -164,7 +164,7 @@ GPU 入口还要求锁定依赖，以及干净且匹配的 Git checkout 或经 S
 
 建立隧道前，先检查远端命令，再调用 `check-readiness --json`，用中文显示每项结果。只读必要项 blocked、报告缺失或超时都会阻止隧道；正式 GPU 未开放不阻止浏览既有结果。
 
-当前远程部署和正式试验仍以设计路线为准，详见[远程物理试验运行与结果查看路线](docs/远程物理试验运行与结果查看路线.md)。
+本次也已验证手动启动 `serve-results` 并单独建立 SSH 转发的方式，详见 [手动查看步骤](deployment/README.md#手动查看结果)。服务在个人开发容器中处理 HTTP 请求和读取共享文件，不申请 GPU；本地浏览器负责视频解码与显示。当前正式试验仍以设计路线为准，详见[远程物理试验运行与结果查看路线](docs/远程物理试验运行与结果查看路线.md)。
 
 ## 底层命令
 
@@ -181,6 +181,8 @@ newton-test-remote smoke-drop-gpu <asset-identity> <full-asset-version> --data-r
 当前可运行链路的底层命令和产物格式参见[本地 CPU 冒烟与结果页使用说明](<docs/本地 CPU 冒烟与结果页使用说明.md>)。
 
 ## 文档
+
+- [当前状态与下一步](deployment/CURRENT_STATUS.md)
 
 - [view.py 桌面 Viewer 使用手册](VIEW_USAGE.md)
 - [本地 CPU 冒烟与结果页使用说明](<docs/本地 CPU 冒烟与结果页使用说明.md>)

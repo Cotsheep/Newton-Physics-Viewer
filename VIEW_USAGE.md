@@ -12,7 +12,7 @@ Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则�
 非正式 CPU 物理边界。二者结果不能直接比较，坡度冒烟也不产生正式摩擦结论。
 服务器侧另有一个不出现在 Viewer 或普通菜单中的 `smoke-drop-gpu` development/integration
 入口。它只在 Determined 分配的单 GPU trial 中使用 Newton `SolverMuJoCo` 的 MJWarp/CUDA
-路径推进一个固定短工况，不提供交互，也不与 Viewer 结果比较；当前尚未在目标 GPU 集群验证。
+路径推进一个固定短工况，不提供交互，也不与 Viewer 结果比较；已在指定节点验证测试资产的仿真及可选 GPU 录像。真实资产和正式批次仍待完成，参见 [当前状态](deployment/CURRENT_STATUS.md)。
 
 ## 代码目录
 
