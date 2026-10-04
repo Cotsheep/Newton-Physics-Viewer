@@ -92,12 +92,42 @@ class ExternalAssetsTests(unittest.TestCase):
     def test_nested_entrypoint_can_reference_sibling_layer_inside_declared_root(self):
         nested = self.source / "models"
         nested.mkdir()
-        (nested / "scene.usda").write_text('#usda 1.0\n(\nsubLayers = [@../model.usda@]\n)\n', encoding="utf-8")
+        (nested / "scene.usda").write_text('#usda 1.0\n(\nmetersPerUnit = 1\nupAxis = "Z"\nsubLayers = [@../model.usda@]\n)\n', encoding="utf-8")
         report = self.register(entrypoint="models/scene.usda")
         self.assertEqual(report["status"], "registered", report)
         snapshot = self.snapshot(report)
         self.assertEqual({item["path"] for item in snapshot["dependencies"]}, {"models/scene.usda", "model.usda"})
         self.assertEqual(snapshot["readiness"]["drop"]["status"], "ready")
+
+    def test_physics_sublayer_does_not_inherit_base_stage_units_or_up_axis(self):
+        from experiment_runner.assets import inspect_template_readiness
+
+        entry = self.source / "physics.usda"
+        entry.write_text('#usda 1.0\n(\nsubLayers = [@model.usda@]\n)\n', encoding="utf-8")
+        readiness = inspect_template_readiness(entry)
+        for template in ("drop", "slope_friction"):
+            self.assertEqual(readiness[template]["status"], "not_ready")
+            self.assertIn("missing_stage_length_unit", readiness[template]["reason_codes"])
+            self.assertIn("missing_stage_up_axis", readiness[template]["reason_codes"])
+        report = self.register(entrypoint="physics.usda")
+        self.assertEqual(report["status"], "registered")
+        self.assertEqual(report["ready_templates"], [])
+
+    def test_non_metre_stage_is_blocked_instead_of_silently_using_metres(self):
+        from experiment_runner.assets import inspect_template_readiness
+
+        self.asset.write_text(READY_USDA.replace("metersPerUnit = 1", "metersPerUnit = 0.01"), encoding="utf-8")
+        readiness = inspect_template_readiness(self.asset)
+        self.assertEqual(readiness["drop"]["status"], "not_ready")
+        self.assertIn("unsupported_stage_length_unit", readiness["drop"]["reason_codes"])
+
+    def test_non_kg_stage_is_blocked_instead_of_silently_using_kg(self):
+        from experiment_runner.assets import inspect_template_readiness
+
+        self.asset.write_text(READY_USDA.replace("metersPerUnit = 1", "metersPerUnit = 1\n    kilogramsPerUnit = 0.001"), encoding="utf-8")
+        readiness = inspect_template_readiness(self.asset)
+        self.assertEqual(readiness["drop"]["status"], "not_ready")
+        self.assertIn("unsupported_stage_mass_unit", readiness["drop"]["reason_codes"])
 
     def test_missing_parameters_register_as_not_ready_without_filling_values(self):
         self.asset.write_text(READY_USDA.replace("float physics:mass = 1", "float physics:mass = 0"), encoding="utf-8")

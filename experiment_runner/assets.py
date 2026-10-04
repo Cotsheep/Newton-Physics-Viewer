@@ -17,7 +17,7 @@ from .storage import DataRoot, atomic_write_json
 
 
 ASSET_ENTRYPOINT = "newton-mujoco.usda"
-CHECKER_VERSION = "asset-readiness-v2"
+CHECKER_VERSION = "asset-readiness-v3"
 _VERSION_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
 
@@ -336,6 +336,34 @@ def _result(reason_codes: list[str], checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _stage_metadata_checks(stage: Any) -> tuple[dict[str, Any], list[str]]:
+    from pxr import UsdGeom, UsdPhysics
+
+    checks = {
+        "meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
+        "length_unit_authored": UsdGeom.StageHasAuthoredMetersPerUnit(stage),
+        "up_axis": str(UsdGeom.GetStageUpAxis(stage)),
+        "up_axis_authored": stage.HasAuthoredMetadata("upAxis"),
+        "kilograms_per_unit": float(UsdPhysics.GetStageKilogramsPerUnit(stage)),
+        "mass_unit_authored": UsdPhysics.StageHasAuthoredKilogramsPerUnit(stage),
+    }
+    reasons = []
+    # Stage metadata is not inherited from sublayers. Newton 1.4.0 assumes
+    # metres when the root lacks units, despite USD's centimetre fallback,
+    # and warns without converting authored non-unit length/mass units.
+    if not checks["length_unit_authored"]:
+        reasons.append("missing_stage_length_unit")
+    elif not math.isclose(checks["meters_per_unit"], 1.0, rel_tol=0.0, abs_tol=1e-12):
+        reasons.append("unsupported_stage_length_unit")
+    if not math.isclose(checks["kilograms_per_unit"], 1.0, rel_tol=0.0, abs_tol=1e-12):
+        reasons.append("unsupported_stage_mass_unit")
+    if not checks["up_axis_authored"]:
+        reasons.append("missing_stage_up_axis")
+    elif checks["up_axis"] not in {"Y", "Z"}:
+        reasons.append("invalid_stage_up_axis")
+    return checks, reasons
+
+
 def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
     """Apply the first conservative per-template physics-field checker."""
 
@@ -391,10 +419,11 @@ def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
             continue
         bound_physics_materials[str(material_prim.GetPath())] = material_prim
 
-    common_reasons: list[str] = []
+    stage_checks, common_reasons = _stage_metadata_checks(stage)
     common_checks: dict[str, Any] = {
         "rigid_body_count": len(rigid_bodies),
         "collision_shape_count": len(collision_shapes),
+        "stage_metadata": stage_checks,
     }
     if not rigid_bodies:
         common_reasons.append("missing_rigid_body")
