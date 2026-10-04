@@ -132,5 +132,72 @@ class GraphicsLoaderEvidenceTests(unittest.TestCase):
         self.assertEqual(report["vendor_configs"], [])
 
 
+class RenderTriangleIndexTests(unittest.TestCase):
+    def test_shell_mesh_reaches_renderer_with_flat_triangle_indices(self):
+        """Use Newton's real shell expansion and normal kernel, without a GL context."""
+        import newton
+        import numpy as np
+        import warp as wp
+        from newton._src.utils.mesh import compute_vertex_normals
+        from experiment_runner.experiments.recording import TriangleIndexViewerGL
+
+        wp.set_device("cpu")
+        mesh = newton.Mesh(
+            vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        before = mesh.indices.copy()
+        viewer = object.__new__(TriangleIndexViewerGL)
+        viewer.device = wp.get_device("cpu")
+        viewer._qualify = lambda name: name
+        captured = []
+
+        def upload(name, points, indices, normals=None, uvs=None, **kwargs):
+            # This is the failing renderer operation, not a simulated GPU trial.
+            computed = compute_vertex_normals(points, indices)
+            self.assertEqual(indices.ndim, 1)
+            self.assertEqual(indices.device, points.device)
+            self.assertEqual(indices.size, 24)  # One shell triangle expands to eight.
+            self.assertTrue(np.isfinite(computed.numpy()).all())
+            captured.append(indices.numpy())
+
+        with mock.patch.object(newton.viewer.ViewerGL, "log_mesh", side_effect=upload):
+            viewer.log_geo("shell", newton.GeoType.MESH, (1, 1, 1), .001, False, mesh)
+        self.assertEqual(len(captured), 1)
+        np.testing.assert_array_equal(mesh.indices, before)
+
+    def test_flat_indices_and_render_options_pass_through_unchanged(self):
+        import newton.viewer
+        import warp as wp
+        from experiment_runner.experiments.recording import TriangleIndexViewerGL
+
+        viewer = object.__new__(TriangleIndexViewerGL)
+        indices = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
+        points, normals, uvs = object(), object(), object()
+        with mock.patch.object(newton.viewer.ViewerGL, "log_mesh") as upload:
+            viewer.log_mesh("solid", points, indices, normals, uvs,
+                            hidden=True, color=(.1, .2, .3), roughness=.4)
+        args, options = upload.call_args
+        self.assertIs(args[2], indices)
+        self.assertIs(args[3], normals)
+        self.assertIs(args[4], uvs)
+        self.assertTrue(options["hidden"])
+        self.assertEqual(options["color"], (.1, .2, .3))
+        self.assertEqual(options["roughness"], .4)
+
+    def test_non_triangle_matrix_is_rejected_before_upload(self):
+        import newton.viewer
+        import warp as wp
+        from experiment_runner.experiments.recording import TriangleIndexViewerGL
+
+        viewer = object.__new__(TriangleIndexViewerGL)
+        indices = wp.zeros((2, 4), dtype=wp.int32, device="cpu")
+        with mock.patch.object(newton.viewer.ViewerGL, "log_mesh") as upload:
+            with self.assertRaises(ValueError):
+                viewer.log_mesh("invalid", object(), indices)
+        upload.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

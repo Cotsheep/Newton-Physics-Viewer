@@ -18,7 +18,30 @@ from ..gpu_safety import GpuExecutionPermit, require_gpu_execution_permit, requi
 from ..video import H264VideoWriter, atomic_write_jpeg
 
 
-class CpuOnlyViewerGL(newton.viewer.ViewerGL):
+class TriangleIndexViewerGL(newton.viewer.ViewerGL):
+    """Normalize Newton 1.4 shell mesh indices at the rendering boundary.
+
+    ``solidify_mesh`` emits (N, 3) indices, while MeshGL's normal kernel and
+    draw count require a flat buffer. Reshape only that render buffer on its
+    existing device; leave source meshes and the physical model untouched.
+    """
+
+    def log_mesh(
+        self, name, points, indices, normals=None, uvs=None, texture=None,
+        hidden=False, backface_culling=True, color=None, roughness=None, metallic=None,
+    ):
+        if indices.ndim == 2 and indices.shape[1] == 3:
+            indices = indices.flatten()
+        elif indices.ndim != 1:
+            raise ValueError("Render triangle indices must be flat or (N, 3)")
+        return super().log_mesh(
+            name, points, indices, normals, uvs, texture=texture, hidden=hidden,
+            backface_culling=backface_culling, color=color,
+            roughness=roughness, metallic=metallic,
+        )
+
+
+class CpuOnlyViewerGL(TriangleIndexViewerGL):
     """Avoid Newton's CUDA-pinned VBO staging buffer on a CPU-only render path."""
 
     def _build_packed_vbo_arrays(self) -> None:

@@ -146,10 +146,10 @@ def _open_gpu_viewer(scene: Any, profile: ExperimentProfile) -> tuple[Any, dict[
     import warp as wp
     from pyglet.libs.egl import egl
     from pyglet.libs.egl.lib import link_EGL
-    from .recording import _opengl_identity
+    from .recording import TriangleIndexViewerGL, _opengl_identity
 
     wp.set_device("cuda:0")
-    viewer = newton.viewer.ViewerGL(
+    viewer = TriangleIndexViewerGL(
         width=profile.video_width, height=profile.video_height,
         headless=True, paused=True,
     )
