@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,15 @@ def _read_record(path: Path) -> dict[str, Any]:
                 or not isinstance(record["registered_at"], str)):
             raise ValueError("Invalid registration fields")
         _entrypoint(record["entrypoint"])
+        adaptation = record.get("stage_metadata_adaptation")
+        if adaptation is not None:
+            if (not isinstance(adaptation, dict)
+                    or set(adaptation) != {"policy", "source_layer", "overrides"}
+                    or adaptation["policy"] != "fill_missing_from_sublayer_v1"
+                    or not isinstance(adaptation["overrides"], dict)
+                    or set(adaptation["overrides"]) - {"metersPerUnit", "kilogramsPerUnit", "upAxis"}):
+                raise ValueError("Invalid stage metadata adaptation")
+            _entrypoint(adaptation["source_layer"])
         if path.parent.parent.parts[-len(identity.split("/")):] != tuple(identity.split("/")):
             raise ValueError("Registration identity differs from its directory")
         return record
@@ -103,10 +113,16 @@ def _states(root: Path, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _external_version(entrypoint: str, records: tuple[FileDigest, ...]) -> str:
+def _external_version(
+    entrypoint: str, records: tuple[FileDigest, ...], adaptation: dict[str, Any] | None = None,
+) -> str:
     # Two different USD entrypoints can share exactly the same dependency set.
     # Bind entrypoint selection as well as file content to the selected version.
     content = f"external-readonly-v1\0{entrypoint}\0{compute_asset_version(records)}"
+    if adaptation is not None:
+        content = "external-readonly-stage-metadata-v1\0" + content + "\0" + json.dumps(
+            adaptation, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
@@ -133,10 +149,34 @@ def _refresh_verified_layers(root: Path, files: list[dict[str, Any]]) -> None:
             cached.Reload(force=True)
 
 
+def _stage_metadata_adaptation(root: Path, entrypoint: str, source_layer: str) -> dict[str, Any]:
+    """Explicitly fill missing root metadata from one verified, composed sublayer."""
+    from pxr import Usd
+
+    source_layer = _entrypoint(source_layer)
+    source_path = _require_package_path(root, root / source_layer)
+    stage = Usd.Stage.Open(str(root / entrypoint))
+    layer = next((item for item in stage.GetLayerStack(includeSessionLayers=False)
+                  if item.realPath and Path(item.realPath).resolve() == source_path), None)
+    if layer is None or source_layer == entrypoint:
+        raise AssetValidationError("invalid_metadata_source_layer", "Select a composed sublayer inside the verified source package")
+    original = stage.GetRootLayer().pseudoRoot
+    overrides = {}
+    for key in ("metersPerUnit", "upAxis", "kilogramsPerUnit"):
+        if original.HasInfo(key):
+            continue
+        if layer.pseudoRoot.HasInfo(key):
+            overrides[key] = layer.pseudoRoot.GetInfo(key)
+        elif key != "kilogramsPerUnit":
+            raise AssetValidationError("missing_source_stage_metadata", f"Selected sublayer does not declare {key}; no value will be guessed")
+    return {"policy": "fill_missing_from_sublayer_v1", "source_layer": source_layer, "overrides": overrides}
+
+
 def register_external_asset(
     data_root: DataRoot, identity_value: str, *, source_root: Path,
     entrypoint: str = ASSET_ENTRYPOINT, source_name: str,
     git_commit: str | None = None,
+    stage_metadata_from: str | None = None,
 ) -> dict[str, Any]:
     """Store metadata only, including readiness failures; never alter the source."""
     data_root.require_initialized()
@@ -167,10 +207,15 @@ def register_external_asset(
 
         version, files, states = _scan(root, entrypoint)
         _refresh_verified_layers(root, files)
-        readiness = inspect_template_readiness(root / entrypoint)
+        adaptation = (_stage_metadata_adaptation(root, entrypoint, stage_metadata_from)
+                      if stage_metadata_from is not None else None)
+        if adaptation is not None:
+            version = _external_version(entrypoint, tuple(FileDigest(**item) for item in files), adaptation)
+        metadata = adaptation["overrides"] if adaptation is not None else None
+        readiness = inspect_template_readiness(root / entrypoint, usd_stage_metadata=metadata)
         from .asset_parameters import snapshot_physics_parameters
 
-        parameters = snapshot_physics_parameters(root / entrypoint)
+        parameters = snapshot_physics_parameters(root / entrypoint, usd_stage_metadata=metadata)
         if _states(root, files) != states:
             raise AssetValidationError("external_asset_changed", "External files changed during inspection")
         record = {
@@ -181,6 +226,9 @@ def register_external_asset(
             "git_commit": report["git_commit"], "dependencies": files,
             "readiness": readiness, "physics_parameters": parameters,
         }
+        if adaptation is not None:
+            record["stage_metadata_adaptation"] = adaptation
+            report["stage_metadata_adaptation"] = adaptation
         report.update({"asset_version": version, "source_name": source_name.strip(),
                        "entrypoint": entrypoint, "dependencies": files,
                        "dependency_count": len(files), "total_bytes": sum(item["size"] for item in files),
@@ -207,20 +255,29 @@ def snapshot_external_asset(data_root: DataRoot, identity: str, version: str) ->
     record = _read_record(external_record_path(data_root, identity, version))
     root = _source_root(data_root, Path(record["source_root"]))
     actual, files, states = _scan(root, record["entrypoint"])
+    _refresh_verified_layers(root, files)
+    adaptation = record.get("stage_metadata_adaptation")
+    if adaptation is not None:
+        current = _stage_metadata_adaptation(root, record["entrypoint"], adaptation["source_layer"])
+        if current != adaptation:
+            raise AssetValidationError("external_asset_version_mismatch", "Stage metadata source no longer matches the selected adaptation")
+        actual = _external_version(record["entrypoint"], tuple(FileDigest(**item) for item in files), adaptation)
     if actual != version:
         raise AssetValidationError("external_asset_version_mismatch", "External source no longer matches the selected version; register its new content explicitly")
-    _refresh_verified_layers(root, files)
     from .asset_parameters import snapshot_physics_parameters
 
+    metadata = adaptation["overrides"] if adaptation is not None else None
     snapshot = {
         "identity": identity, "version": version, "entrypoint": record["entrypoint"],
-        "dependencies": files, "readiness": inspect_template_readiness(root / record["entrypoint"]),
-        "physics_parameters": snapshot_physics_parameters(root / record["entrypoint"]),
+        "dependencies": files, "readiness": inspect_template_readiness(root / record["entrypoint"], usd_stage_metadata=metadata),
+        "physics_parameters": snapshot_physics_parameters(root / record["entrypoint"], usd_stage_metadata=metadata),
         "package_root": root, "storage_mode": EXTERNAL_MODE,
         "source_name": record["source_name"],
         "external_source": {"root": str(root), "registered_at": record["registered_at"],
                             "file_states": states, "verification": "before_load_and_after_run"},
     }
+    if adaptation is not None:
+        snapshot["stage_metadata_adaptation"] = adaptation
     if _states(root, files) != states:
         raise AssetValidationError("external_asset_changed", "External files changed while preparing the run")
     return snapshot
@@ -236,7 +293,7 @@ def verify_external_asset_snapshot(data_root: DataRoot, snapshot: dict[str, Any]
         if _states(root, files) != snapshot["external_source"]["file_states"]:
             raise AssetValidationError("external_asset_changed", "External source changed during this run; results cannot be assigned to the selected version")
         records = digest_dependencies(root, [root / item["path"] for item in files])
-        if (_external_version(snapshot["entrypoint"], records) != snapshot["version"]
+        if (_external_version(snapshot["entrypoint"], records, snapshot.get("stage_metadata_adaptation")) != snapshot["version"]
                 or _states(root, files) != snapshot["external_source"]["file_states"]):
             raise AssetValidationError("external_asset_changed", "External source changed during this run; results cannot be assigned to the selected version")
     except (OSError, AssetValidationError) as exc:

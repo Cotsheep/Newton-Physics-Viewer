@@ -110,6 +110,7 @@ def measure_drop_geometry(
     profile: ExperimentProfile,
     clearance_scale: float = 1.0,
     gpu_permit: GpuExecutionPermit | None = None,
+    usd_stage_metadata: dict[str, Any] | None = None,
 ) -> DropGeometry:
     configure_warp_for_profile(profile, gpu_permit=gpu_permit)
     if clearance_scale <= 0.0 or not math.isfinite(clearance_scale):
@@ -119,6 +120,7 @@ def measure_drop_geometry(
         args,
         asset_path,
         usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+        usd_stage_metadata=usd_stage_metadata,
     )
     bounds = compute_asset_bounds(model, state)
     characteristic_length = bounds.max_extent
@@ -142,12 +144,13 @@ def create_drop_scene(
     measured_bounds: AssetBounds,
     gpu_permit: GpuExecutionPermit | None = None,
     neutral_reference: bool = False,
+    usd_stage_metadata: dict[str, Any] | None = None,
 ) -> DropScene:
     configure_warp_for_profile(profile, gpu_permit=gpu_permit)
     if clearance <= 0.0 or not math.isfinite(clearance):
         raise ValueError("clearance must be finite and greater than zero")
     z_offset = clearance - float(measured_bounds.minimum[2])
-    scene = _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference)
+    scene = _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference, usd_stage_metadata)
     if neutral_reference:
         if scene.drop_observer.reason:
             raise ValueError(f"Drop validation requires measurable collision geometry: {scene.drop_observer.reason}")
@@ -155,19 +158,20 @@ def create_drop_scene(
         # Collision support may differ from the initial planning AABB. Rebuild
         # once with a whole-asset translation; never edit joint-relative poses.
         if abs(actual - clearance) > 1e-6:
-            scene = _build_drop_scene(asset_path, profile, z_offset + clearance - actual, gpu_permit, True)
+            scene = _build_drop_scene(asset_path, profile, z_offset + clearance - actual, gpu_permit, True, usd_stage_metadata)
         actual = scene.drop_observer.geometry.measure(scene.state.body_q.numpy())
         if abs(actual - clearance) > 1e-6:
             raise ValueError("Could not place collision geometry at the requested release clearance")
     return scene
 
 
-def _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference):
+def _build_drop_scene(asset_path, profile, z_offset, gpu_permit, neutral_reference, usd_stage_metadata):
     args = _viewer_arguments(asset_path, z_offset=z_offset, profile=profile)
     model, state, _joint_panel = build_model(
         args,
         asset_path,
         usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+        usd_stage_metadata=usd_stage_metadata,
     )
     if neutral_reference:
         from .drop_reference import set_neutral_ground_priority
@@ -237,6 +241,7 @@ def render_asset_cover(
     *,
     profile: ExperimentProfile,
     output_path: Path,
+    usd_stage_metadata: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Render an asset-only cover without a ground plane or experiment geometry."""
 
@@ -252,6 +257,7 @@ def render_asset_cover(
         args,
         asset_path,
         usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+        usd_stage_metadata=usd_stage_metadata,
     )
     bounds = compute_asset_bounds(model, state)
     viewer, rendering = _headless_viewer(profile)

@@ -40,10 +40,14 @@ def _parameter(prim: Any, field: str, collision_path: str) -> dict[str, Any]:
     return result
 
 
-def snapshot_physics_parameters(entrypoint: Path) -> dict[str, Any]:
+def snapshot_physics_parameters(
+    entrypoint: Path, *, usd_stage_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from pxr import Usd, UsdPhysics, UsdShade
 
-    stage = Usd.Stage.Open(str(entrypoint))
+    from asset_viewer.usd_stage import open_usd_stage
+
+    stage = open_usd_stage(entrypoint, usd_stage_metadata)
     if stage is None:
         raise ValueError("Cannot open asset for parameter snapshot")
     records = []

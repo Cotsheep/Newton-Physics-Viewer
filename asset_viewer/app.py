@@ -204,6 +204,7 @@ def build_model(
     asset_path: Path,
     *,
     usd_schema_resolvers: list[object] | None = None,
+    usd_stage_metadata: dict[str, object] | None = None,
 ) -> tuple[newton.Model, newton.State, JointControlPanel]:
     is_glb = asset_path.suffix.lower() == ".glb"
     is_usd = is_usd_asset(asset_path)
@@ -233,8 +234,13 @@ def build_model(
         # Register before import, otherwise authored mjc:* shape fields are lost.
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         try:
+            source = str(asset_path)
+            if usd_stage_metadata:
+                from .usd_stage import open_usd_stage
+
+                source = open_usd_stage(asset_path, usd_stage_metadata)
             builder.add_usd(
-                str(asset_path),
+                source,
                 xform=wp.transform((0.0, 0.0, args.z), wp.quat_identity()),
                 floating=usd_root_floating(args.usd_root_mode),
                 enable_self_collisions=args.self_collisions,

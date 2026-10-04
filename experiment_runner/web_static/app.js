@@ -388,6 +388,14 @@ function technicalDetails(asset, run, testCase = null) {
     ["源码版本", run.git_commit || "未记录"],
   ];
   if (run.source_name) rows.push(["资产来源", run.source_name]);
+  const adaptation = run.stage_metadata_adaptation;
+  if (adaptation?.policy === "fill_missing_from_sublayer_v1") {
+    rows.push(["场景声明来源", `${adaptation.source_layer}（补足入口缺失声明）`]);
+    const metadata = adaptation.overrides || {};
+    if (metadata.metersPerUnit !== undefined) rows.push(["采用的长度单位", `${metadata.metersPerUnit} 米 / 单位`]);
+    if (metadata.kilogramsPerUnit !== undefined) rows.push(["采用的质量单位", `${metadata.kilogramsPerUnit} 千克 / 单位`]);
+    if (metadata.upAxis) rows.push(["采用的朝上轴", metadata.upAxis]);
+  }
   if (run.asset_storage_mode === "external_readonly") {
     rows.push(["源文件复核", assetInputVerificationLabel(run)]);
   }

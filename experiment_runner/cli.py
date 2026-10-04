@@ -112,6 +112,7 @@ def _command_register_external(args: argparse.Namespace) -> int:
         _data_root(args), args.identity, source_root=args.source_root,
         entrypoint=args.entrypoint, source_name=args.source_name,
         git_commit=args.git_commit,
+        stage_metadata_from=args.stage_metadata_from,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] in {"registered", "duplicate"} else 2
@@ -305,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     external.add_argument("--source-root", type=Path, required=True, help="Absolute directory containing all dependencies; kept separate from outputs.")
     external.add_argument("--entrypoint", required=True, help="USD file path relative to source root.")
     external.add_argument("--source-name", required=True, help="Readable dataset or source name.")
+    external.add_argument("--stage-metadata-from", default=None, help="Explicit sublayer supplying missing root units/up axis; applied in memory, source stays read-only.")
     external.add_argument("--git-commit", default=None)
     _add_data_root_arguments(external)
     external.set_defaults(handler=_command_register_external)

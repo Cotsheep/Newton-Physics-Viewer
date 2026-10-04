@@ -364,7 +364,9 @@ def _stage_metadata_checks(stage: Any) -> tuple[dict[str, Any], list[str]]:
     return checks, reasons
 
 
-def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
+def inspect_template_readiness(
+    entrypoint: Path, *, usd_stage_metadata: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Apply the first conservative per-template physics-field checker."""
 
     try:
@@ -375,7 +377,9 @@ def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
             "OpenUSD Python bindings are required for readiness checks",
         ) from exc
     try:
-        stage = Usd.Stage.Open(str(entrypoint))
+        from asset_viewer.usd_stage import open_usd_stage
+
+        stage = open_usd_stage(entrypoint, usd_stage_metadata)
     except Exception as exc:
         raise AssetValidationError(
             "usd_stage_open_failed",

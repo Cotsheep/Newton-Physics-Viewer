@@ -113,6 +113,122 @@ class ExternalAssetsTests(unittest.TestCase):
         self.assertEqual(report["status"], "registered")
         self.assertEqual(report["ready_templates"], [])
 
+    def metadata_entry(self):
+        entry = self.source / "physics.usda"
+        entry.write_text('#usda 1.0\n(\ndefaultPrim = "World"\nsubLayers = [@model.usda@]\n)\n', encoding="utf-8")
+        return entry
+
+    def test_explicit_sublayer_metadata_creates_distinct_version_without_changing_source(self):
+        self.metadata_entry()
+        self.asset.write_text(READY_USDA.replace('metersPerUnit = 1', 'metersPerUnit = 1\n    kilogramsPerUnit = 1'), encoding="utf-8")
+        before = self.source_contents()
+        original = self.register(entrypoint="physics.usda")
+        adapted = self.register(entrypoint="physics.usda", stage_metadata_from="model.usda")
+        self.assertEqual(adapted["status"], "registered", adapted)
+        self.assertNotEqual(original["asset_version"], adapted["asset_version"])
+        self.assertEqual(adapted["ready_templates"], ["drop", "slope_friction"])
+        snapshot = self.snapshot(adapted)
+        self.assertEqual(snapshot["stage_metadata_adaptation"], {
+            "policy": "fill_missing_from_sublayer_v1", "source_layer": "model.usda",
+            "overrides": {"metersPerUnit": 1.0, "kilogramsPerUnit": 1.0, "upAxis": "Z"},
+        })
+        verify_external_asset_snapshot(self.root, snapshot)
+        self.assertEqual(self.snapshot(original)["readiness"]["drop"]["status"], "not_ready")
+        self.assertEqual(self.source_contents(), before)
+        self.assertFalse(any(self.root.location("inbox").iterdir()))
+        self.assertFalse(any(self.root.location("assets").iterdir()))
+        self.assertEqual(snapshot["physics_parameters"], self.snapshot(original)["physics_parameters"])
+        duplicate = self.register(entrypoint="physics.usda", stage_metadata_from="model.usda")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(duplicate["asset_version"], adapted["asset_version"])
+
+    def test_adaptation_does_not_guess_source_units_or_override_authored_entry_units(self):
+        entry = self.metadata_entry()
+        self.asset.write_text(READY_USDA.replace('    metersPerUnit = 1\n', ''), encoding="utf-8")
+        failed = self.register(entrypoint="physics.usda", stage_metadata_from="model.usda")
+        self.assertEqual(failed["error"]["code"], "missing_source_stage_metadata")
+        self.asset.write_text(READY_USDA, encoding="utf-8")
+        entry.write_text('#usda 1.0\n(\nmetersPerUnit = 0.01\nsubLayers = [@model.usda@]\n)\n', encoding="utf-8")
+        report = self.register(entrypoint="physics.usda", stage_metadata_from="model.usda")
+        self.assertEqual(report["status"], "registered", report)
+        self.assertEqual(report["stage_metadata_adaptation"]["overrides"], {"upAxis": "Z"})
+        self.assertIn("unsupported_stage_length_unit", report["template_readiness"]["drop"]["reason_codes"])
+
+    def test_uncomposed_or_outside_metadata_source_is_rejected(self):
+        self.metadata_entry()
+        (self.source / "unrelated.usda").write_text(READY_USDA, encoding="utf-8")
+        for source_layer in ("unrelated.usda", "physics.usda", "../shared/model.usda"):
+            with self.subTest(source_layer=source_layer):
+                report = self.register(entrypoint="physics.usda", stage_metadata_from=source_layer)
+                self.assertEqual(report["status"], "failed", report)
+
+    def test_changed_metadata_and_tampered_adaptation_cannot_use_registered_version(self):
+        self.metadata_entry()
+        report = self.register(entrypoint="physics.usda", stage_metadata_from="model.usda")
+        snapshot = self.snapshot(report)
+        snapshot["stage_metadata_adaptation"]["overrides"]["upAxis"] = "Y"
+        with self.assertRaisesRegex(AssetValidationError, "changed during this run"):
+            verify_external_asset_snapshot(self.root, snapshot)
+        record_path = self.root.location("asset_references") / "Shared/box" / report["asset_version"] / "registration.json"
+        record = read_json(record_path)
+        record["stage_metadata_adaptation"]["overrides"]["upAxis"] = "Y"
+        import json
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaises(AssetValidationError):
+            self.snapshot(report)
+        record["stage_metadata_adaptation"]["overrides"]["upAxis"] = "Z"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.asset.write_text(READY_USDA.replace('upAxis = "Z"', 'upAxis = "Y"'), encoding="utf-8")
+        with self.assertRaises(AssetValidationError):
+            self.snapshot(report)
+
+    def test_real_newton_import_uses_adapted_axis_and_keeps_relative_dependency_resolution(self):
+        import numpy as np
+        from pxr import Usd
+        from asset_viewer.usd_stage import open_usd_stage
+        from experiment_runner.cpu_safety import prepare_cpu_smoke_environment
+        from experiment_runner.experiments.drop import create_drop_scene, measure_drop_geometry
+        from experiment_runner.experiments.slope import create_slope_scene, measure_slope_geometry
+        from experiment_runner.profiles import get_profile
+
+        entry = self.metadata_entry()
+        asymmetric = READY_USDA.replace('double size = 0.2',
+            'double size = 0.2\n            double3 xformOp:scale = (1, 2, 3)\n            uniform token[] xformOpOrder = ["xformOp:scale"]')
+        self.asset.write_text(asymmetric, encoding="utf-8")
+        snapshot = self.snapshot(self.register(entrypoint="physics.usda", stage_metadata_from="model.usda"))
+        metadata = snapshot["stage_metadata_adaptation"]["overrides"]
+        before = self.source_contents()
+        adapted = open_usd_stage(entry, metadata)
+        original = Usd.Stage.Open(str(entry))
+        self.assertEqual(adapted.GetDefaultPrim().GetPath(), original.GetDefaultPrim().GetPath())
+        self.assertEqual(adapted.GetMetadata("upAxis"), "Z")
+        self.assertFalse(original.HasAuthoredMetadata("upAxis"))
+        with mock.patch.dict(os.environ, dict(os.environ), clear=True):
+            prepare_cpu_smoke_environment()
+            profile = get_profile("mujoco-cpu-wsl-smoke-v1")
+            geometry = measure_drop_geometry(entry, profile=profile, usd_stage_metadata=metadata)
+            np.testing.assert_allclose(geometry.initial_bounds.extents, [0.2, 0.4, 0.6], atol=1e-6)
+            scene = create_drop_scene(entry, profile=profile, clearance=geometry.clearance,
+                                      measured_bounds=geometry.initial_bounds, usd_stage_metadata=metadata)
+            self.assertEqual(scene.model.body_count, 1)
+            np.testing.assert_allclose(scene.model.body_mass.numpy(), [1.0])
+            slope_geometry = measure_slope_geometry(entry, profile=profile, usd_stage_metadata=metadata)
+            slope_scene = create_slope_scene(entry, profile=profile, geometry=slope_geometry, usd_stage_metadata=metadata)
+            self.assertEqual(slope_scene.model.body_count, 1)
+            verify_external_asset_snapshot(self.root, snapshot)
+        self.assertEqual(self.source_contents(), before)
+
+    def test_cli_explicit_metadata_source_is_registered(self):
+        self.metadata_entry()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = main(["register-external-asset", "Shared/box", "--source-root", str(self.source),
+                           "--entrypoint", "physics.usda", "--stage-metadata-from", "model.usda",
+                           "--source-name", "Shared dataset", "--data-root", str(self.root.path),
+                           "--git-commit", "a" * 40])
+        self.assertEqual(status, 0, output.getvalue())
+        self.assertIn('"stage_metadata_adaptation"', output.getvalue())
+
     def test_non_metre_stage_is_blocked_instead_of_silently_using_metres(self):
         from experiment_runner.assets import inspect_template_readiness
 
@@ -331,16 +447,38 @@ class ExternalAssetsTests(unittest.TestCase):
 
 
 class ExternalGpuIntegrationTests(unittest.TestCase):
-    def _register_for_harness(self, harness):
+    def _register_for_harness(self, harness, *, adapt=False):
         source = Path(harness.temporary.name) / "shared"
         source.mkdir()
         (source / "model.usda").write_text(READY_USDA, encoding="utf-8")
+        if adapt:
+            (source / "physics.usda").write_text('#usda 1.0\n(\nsubLayers = [@model.usda@]\n)\n', encoding="utf-8")
         with mock.patch("experiment_runner.external_assets.resolve_git_commit", return_value="b" * 40):
             report = register_external_asset(harness.root, "Shared/box", source_root=source,
-                                            source_name="Shared", entrypoint="model.usda", git_commit="b" * 40)
+                                            source_name="Shared", entrypoint="physics.usda" if adapt else "model.usda",
+                                            stage_metadata_from="model.usda" if adapt else None, git_commit="b" * 40)
         snapshot = snapshot_asset_version(harness.root, "Shared/box", report["asset_version"])
         harness.snapshot.update(snapshot)
         return source
+
+    def test_gpu_runner_passes_selected_metadata_to_both_loads_and_exposes_provenance(self):
+        from tests.test_gpu_smoke import RunnerHarness
+        from experiment_runner.results import build_result_index
+
+        with RunnerHarness() as harness:
+            source = self._register_for_harness(harness, adapt=True)
+            result = harness.run()
+            self.assertEqual(result["status"], "succeeded")
+            metadata = {"metersPerUnit": 1.0, "upAxis": "Z"}
+            self.assertEqual(harness.create_scene.call_args.args[0], source / "physics.usda")
+            self.assertEqual(harness.create_scene.call_args.kwargs["usd_stage_metadata"], metadata)
+            from experiment_runner.experiments import drop
+            self.assertEqual(drop.measure_drop_geometry.call_args.kwargs["usd_stage_metadata"], metadata)
+            manifest, _, _, _ = harness.documents()
+            adaptation = manifest["asset"]["stage_metadata_adaptation"]
+            self.assertEqual(adaptation["source_layer"], "model.usda")
+            public = build_result_index(harness.root)["assets"][0]["runs"][0]
+            self.assertEqual(public["stage_metadata_adaptation"], adaptation)
 
     def test_gpu_runner_reads_external_path_and_records_all_verifications(self):
         from tests.test_gpu_smoke import RunnerHarness

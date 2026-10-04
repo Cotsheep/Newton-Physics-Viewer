@@ -33,6 +33,11 @@ GPU_VIDEO_SMOKE_PROFILE = "mujoco-warp-cuda-dt1ms-video-smoke-v1"
 SLOPE_SMOKE_ANGLE_DEGREES = 25.0
 
 
+def _stage_arguments(snapshot: dict[str, Any]) -> dict[str, Any]:
+    adaptation = snapshot.get("stage_metadata_adaptation")
+    return {"usd_stage_metadata": adaptation["overrides"]} if adaptation is not None else {}
+
+
 def _require_single_body_slope_smoke(readiness: dict[str, Any]) -> None:
     """Apply the current local-smoke policy without changing generic readiness."""
 
@@ -139,6 +144,7 @@ def run_cpu_smoke_drop(
         snapshot["package_root"] / snapshot["entrypoint"],
         profile=profile,
         clearance_scale=1.0,
+        **_stage_arguments(snapshot),
     )
     batch = create_batch_scaffold(
         data_root,
@@ -214,6 +220,7 @@ def run_cpu_smoke_drop(
             snapshot["package_root"] / snapshot["entrypoint"],
             profile=profile,
             output_path=run_directory / "asset-cover.jpg",
+            **_stage_arguments(snapshot),
         )
         _append_run_log(run_directory, "Starting native-contact MuJoCo CPU drop case")
         scene = create_drop_scene(
@@ -221,6 +228,7 @@ def run_cpu_smoke_drop(
             profile=profile,
             clearance=geometry.clearance,
             measured_bounds=geometry.initial_bounds,
+            **_stage_arguments(snapshot),
         )
         _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         result = record_drop_case(
@@ -666,6 +674,7 @@ def _run_gpu_drop_case(
             profile=profile,
             clearance_scale=clearance_scale,
             gpu_permit=gpu_permit,
+            **_stage_arguments(snapshot),
         )
         case_document["condition"].update(
             {
@@ -686,6 +695,7 @@ def _run_gpu_drop_case(
             measured_bounds=geometry.initial_bounds,
             gpu_permit=gpu_permit,
             **({"neutral_reference": True} if validation_case else {}),
+            **_stage_arguments(snapshot),
         )
         _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         if validation_case:
@@ -961,6 +971,7 @@ def run_cpu_smoke_slope(
     geometry = measure_slope_geometry(
         snapshot["package_root"] / snapshot["entrypoint"],
         profile=profile,
+        **_stage_arguments(snapshot),
         angle_degrees=SLOPE_SMOKE_ANGLE_DEGREES,
     )
     batch = create_batch_scaffold(
@@ -1043,12 +1054,14 @@ def run_cpu_smoke_slope(
             snapshot["package_root"] / snapshot["entrypoint"],
             profile=profile,
             output_path=run_directory / "asset-cover.jpg",
+            **_stage_arguments(snapshot),
         )
         _append_run_log(run_directory, "Starting native-contact MuJoCo CPU slope case")
         scene = create_slope_scene(
             snapshot["package_root"] / snapshot["entrypoint"],
             profile=profile,
             geometry=geometry,
+            **_stage_arguments(snapshot),
         )
         _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         result = record_slope_case(

@@ -357,6 +357,7 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
     _copy_safe_public_value(public, asset, "physics_parameters")
     public["asset_storage_mode"] = asset.get("storage_mode", "managed")
     _copy_safe_public_value(public, asset, "source_name")
+    _copy_safe_public_value(public, asset, "stage_metadata_adaptation")
     _copy_safe_public_value(public, manifest, "asset_input_verification")
     _copy_safe_public_value(public, manifest, "git_commit")
     if (run_directory / "preview.jpg").is_file():

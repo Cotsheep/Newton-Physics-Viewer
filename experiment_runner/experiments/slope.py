@@ -180,6 +180,7 @@ def measure_slope_geometry(
     *,
     profile: ExperimentProfile,
     angle_degrees: float = SLOPE_ANGLE_DEGREES,
+    usd_stage_metadata: dict[str, Any] | None = None,
 ) -> SlopeGeometry:
     require_cpu_smoke_profile(profile)
     configure_warp_cpu_only()
@@ -193,6 +194,7 @@ def measure_slope_geometry(
         arguments,
         asset_path,
         usd_schema_resolvers=mujoco_usd_schema_resolvers(),
+        usd_stage_metadata=usd_stage_metadata,
     )
     return plan_slope_geometry(
         compute_asset_bounds(model, state),
@@ -226,6 +228,7 @@ def create_slope_scene(
     *,
     profile: ExperimentProfile,
     geometry: SlopeGeometry,
+    usd_stage_metadata: dict[str, Any] | None = None,
 ) -> SlopeScene:
     """Create one native-contact MuJoCo CPU scene on a fixed finite ramp."""
 
@@ -234,8 +237,13 @@ def create_slope_scene(
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     try:
+        source = str(asset_path)
+        if usd_stage_metadata:
+            from asset_viewer.usd_stage import open_usd_stage
+
+            source = open_usd_stage(asset_path, usd_stage_metadata)
         builder.add_usd(
-            str(asset_path),
+            source,
             xform=_wp_transform(
                 geometry.asset_translation,
                 geometry.asset_rotation_xyzw,
