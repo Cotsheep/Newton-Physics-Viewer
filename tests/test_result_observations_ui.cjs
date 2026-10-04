@@ -103,3 +103,13 @@ test("code or reference-condition changes remain separate comparison groups", ()
   assert.equal(groups.length, 3);
   assert.equal(groups[2].cases.high.complete, false);
 });
+
+test("external input verification requires all three recorded checks", () => {
+  const verified = {status:"verified", stage:"after_run",
+    checks:["before_load", "after_load", "after_run"].map(stage => ({stage}))};
+  assert.match(context.assetInputVerificationLabel({asset_input_verification:verified}), /均与所选版本一致/);
+  for (const partial of [undefined, {...verified, checks:[]}, {...verified, stage:"after_load"}]) {
+    assert.equal(context.assetInputVerificationLabel({asset_input_verification:partial}), "未完成全部复核");
+  }
+  assert.match(context.assetInputVerificationLabel({asset_input_verification:{status:"failed"}}), /不可归属于所选版本/);
+});

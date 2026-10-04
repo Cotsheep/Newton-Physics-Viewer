@@ -355,6 +355,9 @@ def _public_run(run_directory: Path) -> dict[str, Any] | None:
         "cases": cases,
     }
     _copy_safe_public_value(public, asset, "physics_parameters")
+    public["asset_storage_mode"] = asset.get("storage_mode", "managed")
+    _copy_safe_public_value(public, asset, "source_name")
+    _copy_safe_public_value(public, manifest, "asset_input_verification")
     _copy_safe_public_value(public, manifest, "git_commit")
     if (run_directory / "preview.jpg").is_file():
         public["preview_url"] = f"/runs/{run_id}/preview.jpg"

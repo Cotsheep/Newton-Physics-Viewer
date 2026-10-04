@@ -13,6 +13,7 @@ DATA_ROOT_ENV = "NEWTON_DATA_ROOT"
 LAYOUT = {
     "inbox": Path("inbox"),
     "assets": Path("assets"),
+    "asset_references": Path("asset-references"),
     "asset_trash": Path("asset-trash"),
     "import_reports": Path("import-reports"),
     "batches": Path("runtime") / "batches",
@@ -24,6 +25,7 @@ LAYOUT = {
 _ALLOWED_TOP_LEVEL = {
     "inbox",
     "assets",
+    "asset-references",
     "asset-trash",
     "import-reports",
     "runtime",
@@ -201,7 +203,10 @@ class DataRoot:
         separate_from: Iterable[Path] = (),
     ) -> None:
         self.validate_location(source_root=source_root, separate_from=separate_from)
-        missing = [name for name, relative in LAYOUT.items() if not (self.path / relative).is_dir()]
+        # Old data roots remain usable; registration creates this metadata-only
+        # directory on demand. It never stores or links external asset files.
+        missing = [name for name, relative in LAYOUT.items()
+                   if name != "asset_references" and not (self.path / relative).is_dir()]
         if missing:
             raise ValueError(
                 "NEWTON_DATA_ROOT is not initialized; missing: " + ", ".join(sorted(missing))

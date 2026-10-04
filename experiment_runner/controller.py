@@ -477,12 +477,24 @@ def list_assets_for_menu(data_root: DataRoot) -> list[dict[str, Any]]:
     rows = list_asset_versions(data_root)
     menu_rows: list[dict[str, Any]] = []
     for row in rows:
-        readiness = _menu_readiness(data_root, row["identity"], row["version"])
+        failure_label = None
+        if row.get("storage_mode") == "external_readonly":
+            from .assets import snapshot_asset_version
+
+            try:
+                readiness = snapshot_asset_version(data_root, row["identity"], row["version"])["readiness"]
+            except (ValueError, OSError) as exc:
+                readiness = None
+                failure_label = ("源内容已变化，需重新登记" if getattr(exc, "code", None) == "external_asset_version_mismatch"
+                                 else "源文件不可用或预检失败")
+        else:
+            readiness = _menu_readiness(data_root, row["identity"], row["version"])
         menu_rows.append(
             {
                 **row,
-                "readiness": _readiness_label(readiness),
+                "readiness": failure_label or _readiness_label(readiness),
                 "template_readiness": readiness or {},
+                "storage_label": "外部只读" if row.get("storage_mode") == "external_readonly" else "版本入库",
             }
         )
     return menu_rows
@@ -515,6 +527,8 @@ def _choose_row(rows: list[dict[str, Any]], *, heading: str) -> dict[str, Any] |
     print(f"\n{heading}")
     for index, row in enumerate(rows, start=1):
         suffix = f"    {row['readiness']}" if "readiness" in row else ""
+        if "storage_label" in row:
+            suffix += f"    {row['storage_label']}"
         print(f"{index}. {row['identity']}    {row.get('version', '')[:8]}{suffix}")
     print("0. 返回")
     value = input("请选择编号：").strip()
@@ -576,16 +590,35 @@ def _accept_asset_interactive(config: ControllerConfig) -> None:
     print(f"验收报告目录：{data_root.location('import_reports')}")
 
 
+def _register_external_interactive(config: ControllerConfig) -> None:
+    from .external_assets import register_external_asset
+
+    data_root = _require_data_root(config)
+    print("\n登记外部只读 USD：文件保留原位，登记和结果写入试验数据目录。")
+    source_root = Path(_strip_path_quotes(input("包含完整依赖的源目录（绝对路径）：")))
+    entrypoint = _strip_path_quotes(input("USD 入口（相对源目录路径）："))
+    identity = input("资产标识（例如 dataset/props/box）：").strip()
+    source_name = input("来源名称：").strip()
+    report = register_external_asset(data_root, identity, source_root=source_root,
+                                     entrypoint=entrypoint, source_name=source_name)
+    if report["status"] in {"registered", "duplicate"}:
+        print(f"已登记（外部只读）：{identity}    {report['asset_version'][:8]}")
+        print(f"试验前置检查：{_readiness_label(report['template_readiness'])}")
+        print("登记成功不代表资产物理合理或可以运行所有试验。")
+    else:
+        print(f"登记失败：{report['error']['code']} — {report['error']['message']}")
+
+
 def _show_assets_interactive(config: ControllerConfig) -> None:
     data_root = _require_data_root(config)
     rows = list_assets_for_menu(data_root)
     if not rows:
-        print("尚无已验收入库的资产。")
+        print("尚无已入库或登记的资产。")
         return
-    print("\n已验收资产")
+    print("\n已入库或登记的资产")
     for index, row in enumerate(rows, start=1):
         print(
-            f"{index}. {row['identity']}    {row['version'][:8]}    {row['readiness']}"
+            f"{index}. {row['identity']}    {row['version'][:8]}    {row['readiness']}    {row['storage_label']}"
         )
     print("完整版本哈希由程序内部使用，日常选择不需要手动输入。")
 
@@ -692,9 +725,10 @@ def _print_menu(config: ControllerConfig) -> None:
     print("4. 运行本地 CPU 坡度冒烟")
     print("5. 打开本地结果页")
     print("6. 打开远程结果页")
-    print("7. 查看已验收资产与就绪状态")
+    print("7. 查看已入库或登记资产与就绪状态")
     print("8. 查看项目能力状态")
     print("9. 设置")
+    print("10. 登记外部只读 USD 资产")
     print("0. 退出")
 
 
@@ -738,6 +772,8 @@ def _interactive(*, config_path: Path = DEFAULT_CONTROLLER_CONFIG) -> int:
                 _show_capabilities()
             elif choice == "9":
                 config = _configure_interactive(config, config_path=config_path)
+            elif choice == "10":
+                _register_external_interactive(config)
             else:
                 print("无法识别的菜单选项。")
         except KeyboardInterrupt:

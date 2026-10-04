@@ -76,6 +76,7 @@ def _command_show_storage(args: argparse.Namespace) -> int:
     for name in (
         "inbox",
         "assets",
+        "asset_references",
         "asset_trash",
         "import_reports",
         "batches",
@@ -102,6 +103,18 @@ def _command_list_assets(args: argparse.Namespace) -> int:
     versions = list_asset_versions(_data_root(args))
     print(json.dumps(versions, ensure_ascii=False, indent=2))
     return 0
+
+
+def _command_register_external(args: argparse.Namespace) -> int:
+    from .external_assets import register_external_asset
+
+    report = register_external_asset(
+        _data_root(args), args.identity, source_root=args.source_root,
+        entrypoint=args.entrypoint, source_name=args.source_name,
+        git_commit=args.git_commit,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["status"] in {"registered", "duplicate"} else 2
 
 
 def _command_rebuild_index(args: argparse.Namespace) -> int:
@@ -285,7 +298,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_root_arguments(accept)
     accept.set_defaults(handler=_command_accept_asset)
 
-    list_assets = subparsers.add_parser("list-assets", help="List accepted immutable versions.")
+    external = subparsers.add_parser(
+        "register-external-asset", help="Inspect and register an external USD in place, without copying or writing to its source.",
+    )
+    external.add_argument("identity", help="Stable identity; cannot overlap an existing managed identity.")
+    external.add_argument("--source-root", type=Path, required=True, help="Absolute directory containing all dependencies; kept separate from outputs.")
+    external.add_argument("--entrypoint", required=True, help="USD file path relative to source root.")
+    external.add_argument("--source-name", required=True, help="Readable dataset or source name.")
+    external.add_argument("--git-commit", default=None)
+    _add_data_root_arguments(external)
+    external.set_defaults(handler=_command_register_external)
+
+    list_assets = subparsers.add_parser("list-assets", help="List managed versions and external read-only registrations.")
     _add_data_root_arguments(list_assets)
     list_assets.set_defaults(handler=_command_list_assets)
 

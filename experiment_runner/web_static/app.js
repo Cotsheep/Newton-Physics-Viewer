@@ -366,17 +366,31 @@ function caseSummary(testCase) {
   return summaries[testCase.status] || "完成状态尚未记录。";
 }
 
+function assetInputVerificationLabel(run) {
+  const verification = run.asset_input_verification;
+  if (verification?.status === "failed") return "源文件发生变化或无法读取，本次结果不可归属于所选版本";
+  const stages = new Set((Array.isArray(verification?.checks) ? verification.checks : []).map(check => check.stage));
+  return verification?.status === "verified" && verification.stage === "after_run" &&
+    ["before_load", "after_load", "after_run"].every(stage => stages.has(stage))
+    ? "读取前、加载后及运行结束时均与所选版本一致" : "未完成全部复核";
+}
+
 function technicalDetails(asset, run, testCase = null) {
   const details = element("details", "technical-details");
   details.append(element("summary", "", "详情"));
   const facts = element("dl", "metric-list");
   const rows = [
     ["资产标识", asset.identity],
+    ["资产读取方式", run.asset_storage_mode === "external_readonly" ? "外部只读（文件保留原位）" : run.asset_storage_mode === "managed" ? "版本入库" : "未记录"],
     ["运行编号", run.run_id],
     ["资产版本", run.asset_version],
     ["运行配置", run.profile_name || "未记录"],
     ["源码版本", run.git_commit || "未记录"],
   ];
+  if (run.source_name) rows.push(["资产来源", run.source_name]);
+  if (run.asset_storage_mode === "external_readonly") {
+    rows.push(["源文件复核", assetInputVerificationLabel(run)]);
+  }
   if (testCase) {
     rows.push(
       ["工况编号", testCase.case_id],

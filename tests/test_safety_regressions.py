@@ -35,7 +35,7 @@ class SafetyRegressionTests(unittest.TestCase):
         from experiment_runner.gpu_safety import issue_gpu_execution_permit
         permit = issue_gpu_execution_permit(ENVIRONMENT)
         with mock.patch.object(recording.wp, "set_device") as choose:
-            with self.assertRaisesRegex(GpuSmokeSafetyError, "fixed GPU integration"):
+            with self.assertRaisesRegex(GpuSmokeSafetyError, "bounded GPU development profiles"):
                 recording.configure_warp_for_profile(get_profile("mujoco-native-dt1ms-v1"), gpu_permit=permit)
         choose.assert_not_called()
 

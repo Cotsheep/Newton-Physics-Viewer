@@ -71,12 +71,12 @@ def normalize_asset_identity(value: str) -> str:
 def _path_has_symlink(path: Path, stop: Path) -> bool:
     candidate = path
     while candidate != stop:
-        if candidate.is_symlink():
+        if candidate.is_symlink() or candidate.is_junction():
             return True
         if candidate.parent == candidate:
             return True
         candidate = candidate.parent
-    return stop.is_symlink()
+    return stop.is_symlink() or stop.is_junction()
 
 
 def _require_package_path(package_root: Path, candidate: Path) -> Path:
@@ -108,15 +108,18 @@ def _require_package_path(package_root: Path, candidate: Path) -> Path:
     return resolved
 
 
-def collect_usd_dependencies(package_root: Path) -> tuple[Path, ...]:
+def collect_usd_dependencies(
+    package_root: Path, entrypoint_name: str = ASSET_ENTRYPOINT,
+    *, refresh_layers: bool = False,
+) -> tuple[Path, ...]:
     """Resolve the composed USD dependency graph and keep it inside the package."""
 
     package_root = package_root.resolve(strict=True)
-    entrypoint = package_root / ASSET_ENTRYPOINT
+    entrypoint = package_root / entrypoint_name
     if not entrypoint.is_file():
         raise AssetValidationError(
             "missing_asset_entrypoint",
-            f"Asset package must directly contain {ASSET_ENTRYPOINT}",
+            f"Asset package must contain {entrypoint_name}",
         )
     try:
         from pxr import Sdf, Usd, UsdUtils
@@ -127,22 +130,34 @@ def collect_usd_dependencies(package_root: Path) -> tuple[Path, ...]:
         ) from exc
 
     try:
+        if refresh_layers:
+            # A shared source can change between commands in the same process.
+            # Discard cached layer content before inspecting authored parameters.
+            cached = Sdf.Layer.Find(str(entrypoint))
+            if cached is not None:
+                cached.Reload(force=True)
         stage = Usd.Stage.Open(str(entrypoint))
     except Exception as exc:
         raise AssetValidationError(
             "usd_stage_open_failed",
-            f"{ASSET_ENTRYPOINT} could not be opened",
+            f"{entrypoint_name} could not be opened",
         ) from exc
     if stage is None:
         raise AssetValidationError(
             "usd_stage_open_failed",
-            f"{ASSET_ENTRYPOINT} could not be opened",
+            f"{entrypoint_name} could not be opened",
         )
 
     try:
         layers, assets, unresolved = UsdUtils.ComputeAllDependencies(
             Sdf.AssetPath(str(entrypoint))
         )
+        if refresh_layers:
+            for layer in layers:
+                layer.Reload(force=True)
+            layers, assets, unresolved = UsdUtils.ComputeAllDependencies(
+                Sdf.AssetPath(str(entrypoint))
+            )
     except Exception as exc:
         raise AssetValidationError(
             "usd_dependency_scan_failed",
@@ -470,8 +485,6 @@ def inspect_template_readiness(entrypoint: Path) -> dict[str, dict[str, Any]]:
 def list_asset_versions(data_root: DataRoot) -> list[dict[str, str]]:
     assets_root = data_root.location("assets")
     versions: list[dict[str, str]] = []
-    if not assets_root.is_dir():
-        return versions
     for entrypoint in assets_root.rglob(ASSET_ENTRYPOINT):
         version_directory = entrypoint.parent
         if not _VERSION_PATTERN.fullmatch(version_directory.name):
@@ -485,6 +498,9 @@ def list_asset_versions(data_root: DataRoot) -> list[dict[str, str]]:
                 "version": version_directory.name,
             }
         )
+    from .external_assets import list_external_asset_versions
+
+    versions.extend(list_external_asset_versions(data_root))
     return sorted(versions, key=lambda item: (item["identity"], item["version"]))
 
 
@@ -501,6 +517,10 @@ def snapshot_asset_version(
             "invalid_asset_version",
             "Asset version must be a complete SHA-256 value",
         )
+    from .external_assets import external_record_path, snapshot_external_asset
+
+    if external_record_path(data_root, identity, version).exists():
+        return snapshot_external_asset(data_root, identity, version)
     package_root = data_root.resolve_managed(
         "assets",
         *identity.split("/"),
@@ -585,6 +605,13 @@ def accept_asset(
         identity = normalize_asset_identity(identity_value)
         report["asset_identity"] = identity
         _check_identity_case_collision(data_root, identity)
+        from .external_assets import list_external_asset_versions
+
+        if any(row["identity"] == identity for row in list_external_asset_versions(data_root)):
+            raise AssetValidationError(
+                "asset_storage_mode_conflict",
+                "This identity is registered as external read-only; choose a different identity",
+            )
         uploaded_relative_path = identity_value.replace("\\", "/")
         inbox_root = data_root.location("inbox")
         package_root = inbox_root.joinpath(*uploaded_relative_path.split("/"))

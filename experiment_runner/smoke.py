@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .assets import normalize_asset_identity, snapshot_asset_version, utc_now
+from .assets import AssetValidationError, normalize_asset_identity, snapshot_asset_version, utc_now
+from .external_assets import EXTERNAL_MODE, verify_external_asset_snapshot
 from .cpu_safety import prepare_cpu_smoke_environment
 from .profiles import get_profile
 from .provenance import resolve_git_commit
@@ -81,6 +82,27 @@ def _rendering_log_message(rendering: dict[str, Any]) -> str:
         f"device={rendering['device']}; renderer={rendering['renderer']}; "
         f"vendor={rendering['vendor']}"
     )
+
+
+def _verify_asset_input(data_root: DataRoot, snapshot: dict[str, Any], run_directory: Path, stage: str) -> None:
+    if snapshot.get("storage_mode") != EXTERNAL_MODE:
+        return
+    audit = read_json(run_directory / "manifest.json").get("asset_input_verification", {"checks": []})
+    try:
+        verify_external_asset_snapshot(data_root, snapshot)
+    except (ValueError, OSError) as exc:
+        audit.update(status="failed", stage=stage, error_code=getattr(exc, "code", "external_asset_read_failed"))
+        _update_manifest(run_directory, asset_input_verification=audit)
+        raise
+    audit["checks"].append({"stage": stage, "checked_at": utc_now()})
+    audit.update(status="verified", stage=stage)
+    _update_manifest(run_directory, asset_input_verification=audit)
+
+
+def _input_failure_message(exc: BaseException, fallback: str) -> str:
+    if isinstance(exc, AssetValidationError) and exc.code.startswith("external_"):
+        return "公共资产在运行期间发生变化或不再可读，本次结果不能归属于所选版本；请检查源文件后重新登记。"
+    return fallback
 
 
 def run_cpu_smoke_drop(
@@ -187,6 +209,7 @@ def run_cpu_smoke_drop(
     )
 
     try:
+        _verify_asset_input(data_root, snapshot, run_directory, "before_load")
         cover_rendering = render_asset_cover(
             snapshot["package_root"] / snapshot["entrypoint"],
             profile=profile,
@@ -199,12 +222,14 @@ def run_cpu_smoke_drop(
             clearance=geometry.clearance,
             measured_bounds=geometry.initial_bounds,
         )
+        _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         result = record_drop_case(
             scene,
             profile=profile,
             output_directory=case_directory,
             duration_seconds=duration,
         )
+        _verify_asset_input(data_root, snapshot, run_directory, "after_run")
         _append_run_log(run_directory, _rendering_log_message(result["rendering"]))
         finished_at = utc_now()
         case_document.update(result)
@@ -279,6 +304,7 @@ def run_cpu_smoke_drop(
             if interrupted
             else f"CPU smoke drop failed ({type(exc).__name__})"
         )
+        safe_failure = _input_failure_message(exc, safe_failure)
         _append_run_log(run_directory, safe_failure)
         case_document["status"] = terminal_status
         case_document["finished_at"] = failed_at
@@ -286,7 +312,7 @@ def run_cpu_smoke_drop(
             "code": (
                 "cpu_smoke_drop_interrupted"
                 if interrupted
-                else "cpu_smoke_drop_failed"
+                else getattr(exc, "code", "cpu_smoke_drop_failed")
             ),
             "message": safe_failure,
         }
@@ -583,6 +609,7 @@ def _run_gpu_drop_case(
     _update_manifest(run_directory, recording=recording)
     atomic_write_json(case_directory / "case.json", case_document)
     try:
+        _verify_asset_input(data_root, snapshot, run_directory, "before_load")
         # The Determined/NVIDIA metadata gate above must pass before this first
         # Warp runtime operation.  Discovery does not choose a host GPU index.
         visibility = require_single_warp_visible_gpu(gpu_runtime, permit=gpu_permit)
@@ -660,6 +687,7 @@ def _run_gpu_drop_case(
             gpu_permit=gpu_permit,
             **({"neutral_reference": True} if validation_case else {}),
         )
+        _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         if validation_case:
             from .experiments.drop_reference import attach_drop_reference
 
@@ -729,6 +757,7 @@ def _run_gpu_drop_case(
             **recording_arguments,
         )
         recording = result["recording"]
+        _verify_asset_input(data_root, snapshot, run_directory, "after_run")
         expected_steps = round(duration / profile.physics_dt)
         if result.get("physics_steps") != expected_steps:
             raise RuntimeError(
@@ -836,6 +865,7 @@ def _run_gpu_drop_case(
             if interrupted
             else f"GPU integration smoke failed ({type(exc).__name__}); CPU fallback was not attempted"
         )
+        safe_failure = _input_failure_message(exc, safe_failure)
         _append_run_log(run_directory, safe_failure)
         case_document["status"] = terminal_status
         case_document["finished_at"] = failed_at
@@ -843,7 +873,7 @@ def _run_gpu_drop_case(
             "code": (
                 "gpu_integration_smoke_interrupted"
                 if interrupted
-                else "gpu_integration_smoke_failed"
+                else getattr(exc, "code", "gpu_integration_smoke_failed")
             ),
             "message": safe_failure,
         }
@@ -1008,6 +1038,7 @@ def run_cpu_smoke_slope(
     )
 
     try:
+        _verify_asset_input(data_root, snapshot, run_directory, "before_load")
         cover_rendering = render_asset_cover(
             snapshot["package_root"] / snapshot["entrypoint"],
             profile=profile,
@@ -1019,6 +1050,7 @@ def run_cpu_smoke_slope(
             profile=profile,
             geometry=geometry,
         )
+        _verify_asset_input(data_root, snapshot, run_directory, "after_load")
         result = record_slope_case(
             scene,
             profile=profile,
@@ -1026,6 +1058,7 @@ def run_cpu_smoke_slope(
             output_directory=case_directory,
             duration_seconds=duration,
         )
+        _verify_asset_input(data_root, snapshot, run_directory, "after_run")
         _append_run_log(run_directory, _rendering_log_message(result["rendering"]))
         finished_at = utc_now()
         case_document.update(result)
@@ -1102,6 +1135,7 @@ def run_cpu_smoke_slope(
             if interrupted
             else f"CPU smoke slope failed ({type(exc).__name__})"
         )
+        safe_failure = _input_failure_message(exc, safe_failure)
         _append_run_log(run_directory, safe_failure)
         case_document["status"] = terminal_status
         case_document["finished_at"] = failed_at
@@ -1109,7 +1143,7 @@ def run_cpu_smoke_slope(
             "code": (
                 "cpu_smoke_slope_interrupted"
                 if interrupted
-                else "cpu_smoke_slope_failed"
+                else getattr(exc, "code", "cpu_smoke_slope_failed")
             ),
             "message": safe_failure,
         }
