@@ -134,7 +134,7 @@ _PROFILE_AVAILABILITY = MappingProxyType(
             "entrypoint": "validate-drop-gpu",
             "entrypoints": ("validate-drop-gpu",),
             "message": (
-                "One explicitly selected low/medium/high 10-second case per externally "
+                "One explicitly selected low/medium/high/fixed-1m 10-second case per externally "
                 "scheduled trial, with required GPU recording; formal validation pending."
             ),
         },

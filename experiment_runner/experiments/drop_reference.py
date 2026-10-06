@@ -44,23 +44,32 @@ def scale_reference(bounds: AssetBounds, effective_length: float) -> DropScaleRe
     length = float(effective_length)
     if not np.isfinite(length) or length <= 0:
         raise ValueError("Scale length must be finite and positive")
-    x, y = float(bounds.minimum[0] - 0.5 * length), float(bounds.center[1])
+    # Keep labels legible when a small asset shares the one-metre framing.
+    marker_length = max(length, 0.5)
+    x, y = float(bounds.minimum[0] - 0.5 * marker_length), float(bounds.center[1])
     segments = []
     def line(a, b):
         segments.append((a, b))
-    top = 2.0 * length + float(bounds.extents[2])
+    release_span = max(2.0 * length, 1.0)
+    top = release_span + float(bounds.extents[2])
     line((x, y, 0.0), (x, y, top))
     # Seven-segment numeric labels in world coordinates, measured in metres.
     glyphs = {'0':'abcdef', '1':'bc', '2':'abged', '3':'abgcd', '4':'fgbc',
               '5':'afgcd', '6':'afgecd', '7':'abc', '8':'abcdefg', '9':'abfgcd'}
     strokes = {'a':((0,2),(1,2)), 'b':((1,2),(1,1)), 'c':((1,1),(1,0)),
                'd':((1,0),(0,0)), 'e':((0,0),(0,1)), 'f':((0,1),(0,2)), 'g':((0,1),(1,1))}
-    unit = 0.035 * length
-    for z in np.arange(5) * 0.5 * length:
-        line((x-0.08*length,y,z), (x+0.08*length,y,z))
+    unit = 0.035 * marker_length
+    ticks = np.arange(int(np.floor(release_span / (0.5 * length))) + 1) * 0.5 * length
+    if not np.isclose(ticks, 1.0, rtol=0.0, atol=1e-8).any():
+        ticks = np.sort(np.append(ticks, 1.0))
+    for z in ticks:
+        line((x-0.08*marker_length,y,z), (x+0.08*marker_length,y,z))
+        # Keep the 1 m label clear when a relative tick falls almost on it.
+        if abs(z - 1.0) < 2.5 * unit and not np.isclose(z, 1.0, rtol=0.0, atol=1e-8):
+            continue
         label = (f'{z:.3f}'.rstrip('0').rstrip('.') or '0') + 'm'
         for index, char in enumerate(label):
-            origin = x - (len(label)-index) * 1.5 * unit - 0.12 * length
+            origin = x - (len(label)-index) * 1.5 * unit - 0.12 * marker_length
             if char == '.':
                 parts = [((0,0),(0.2,0))]
             elif char == 'm':
@@ -77,7 +86,7 @@ def scale_reference(bounds: AssetBounds, effective_length: float) -> DropScaleRe
         line(a,b)
     starts, ends = (np.asarray(v, dtype=np.float32) for v in zip(*segments))
     points = np.concatenate((starts,ends,[bounds.minimum,bounds.maximum]))
-    # Identical framing reference across low/mid/high for the same asset pose.
+    # Identical framing across relative heights and fixed 1 m for the same asset pose.
     minimum, maximum = points.min(axis=0), points.max(axis=0)
     minimum[2] = 0.0
     maximum[2] = top
@@ -104,5 +113,7 @@ def attach_drop_reference(scene, geometry) -> dict:
         "initial_joint_positions": scene.model.joint_q.numpy().tolist(),
         "scale_reference": {"kind": "visual_only_meter_ruler_and_square_v1", "label_unit": "m",
                             "tick_interval_m": 0.5 * geometry.effective_length,
+                            "ruler_top_m": float(scene.scale_reference.camera_bounds.maximum[2]),
+                            "fixed_height_tick_m": 1.0,
                             "square_side_m": geometry.effective_length, "affects_physics": False},
     }

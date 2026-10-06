@@ -108,13 +108,17 @@ def measure_drop_geometry(
     asset_path: Path,
     *,
     profile: ExperimentProfile,
-    clearance_scale: float = 1.0,
+    clearance_scale: float | None = 1.0,
+    fixed_clearance_m: float | None = None,
     gpu_permit: GpuExecutionPermit | None = None,
     usd_stage_metadata: dict[str, Any] | None = None,
 ) -> DropGeometry:
+    if (clearance_scale is None) == (fixed_clearance_m is None):
+        raise ValueError("Specify exactly one of clearance_scale and fixed_clearance_m")
+    height_value = fixed_clearance_m if fixed_clearance_m is not None else clearance_scale
+    if height_value <= 0.0 or not math.isfinite(height_value):
+        raise ValueError("Release height must be finite and greater than zero")
     configure_warp_for_profile(profile, gpu_permit=gpu_permit)
-    if clearance_scale <= 0.0 or not math.isfinite(clearance_scale):
-        raise ValueError("clearance_scale must be finite and greater than zero")
     args = _viewer_arguments(asset_path, z_offset=0.0, profile=profile)
     model, state, _joint_panel = build_model(
         args,
@@ -127,7 +131,8 @@ def measure_drop_geometry(
     if not math.isfinite(characteristic_length) or characteristic_length <= 0.0:
         raise ValueError("Asset collision bounds do not define a positive characteristic length")
     effective_length = float(np.clip(characteristic_length, 0.10, 1.00))
-    clearance = clearance_scale * effective_length
+    clearance = (fixed_clearance_m if fixed_clearance_m is not None
+                 else clearance_scale * effective_length)
     return DropGeometry(
         characteristic_length=characteristic_length,
         effective_length=effective_length,

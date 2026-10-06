@@ -417,6 +417,7 @@ def _run_gpu_drop_case(
     profile = get_profile(DROP_VALIDATION_PROFILE if validation_case else
                           GPU_VIDEO_SMOKE_PROFILE if record_video else GPU_SMOKE_PROFILE)
     clearance_scale = validation_case.clearance_scale if validation_case else 1.0
+    fixed_clearance_m = validation_case.fixed_clearance_m if validation_case else None
     if profile.authoritative or profile.use_mujoco_cpu:
         raise RuntimeError("The GPU integration smoke profile safety boundary is invalid")
     duration = profile.case_duration_seconds
@@ -458,6 +459,7 @@ def _run_gpu_drop_case(
             "authoritative": False,
             "single_case": True,
             "drop_clearance_scale": clearance_scale,
+            **({"drop_fixed_clearance_m": fixed_clearance_m} if fixed_clearance_m is not None else {}),
             "case_duration_seconds": duration,
             "wall_time_limit_seconds": profile.wall_time_limit_seconds,
             "device_selection": "determined_trial_gate_then_container_logical_cuda_0",
@@ -544,8 +546,9 @@ def _run_gpu_drop_case(
         "status": "running",
         "condition": {
             "clearance_scale": clearance_scale,
-            "case_scope": "three_height_drop_validation_v1" if validation_case else "single_medium_height_drop_only",
+            "case_scope": validation_case.case_scope if validation_case else "single_medium_height_drop_only",
             **({"height_level": validation_case.height} if validation_case else {}),
+            **({"fixed_clearance_m": fixed_clearance_m} if fixed_clearance_m is not None else {}),
             "initial_velocity_mps": [0.0, 0.0, 0.0],
             "initial_angular_velocity_rps": [0.0, 0.0, 0.0],
         },
@@ -578,7 +581,7 @@ def _run_gpu_drop_case(
         },
         "authoritative": False,
         "interpretation": (
-            "One three-height development validation case; formal GPU acceptance is pending."
+            "One selected drop development validation case; formal GPU acceptance is pending."
             if validation_case else
             "Development integration smoke only; it validates a bounded CUDA execution "
             "path and does not produce an authoritative physics conclusion."
@@ -673,6 +676,7 @@ def _run_gpu_drop_case(
             asset_path,
             profile=profile,
             clearance_scale=clearance_scale,
+            **({"fixed_clearance_m": fixed_clearance_m} if fixed_clearance_m is not None else {}),
             gpu_permit=gpu_permit,
             **_stage_arguments(snapshot),
         )

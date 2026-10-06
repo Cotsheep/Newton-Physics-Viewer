@@ -6,7 +6,9 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const context = vm.createContext({
-  document: { querySelector: () => ({}) },
+  document: { querySelector: () => ({}), createElement: tag => ({
+    tag, children: [], textContent: "", append(...children) { this.children.push(...children); },
+  }) },
   window: { addEventListener: () => {} },
   fetch: () => new Promise(() => {}),
   URLSearchParams, Intl, console,
@@ -75,6 +77,52 @@ function validationRun(level, overrides = {}) {
         case_scope:"three_height_drop_validation_v1", reference_policy:"asset_priority_over_ground_v1"}}],
     ...overrides};
 }
+function fixedValidationRun(overrides = {}) {
+  const run = validationRun("fixed-1m", overrides);
+  Object.assign(run.cases[0].condition, {case_scope:"fixed_1m_drop_validation_v1",
+    clearance_scale:null, fixed_clearance_m:1, clearance_m:1, actual_initial_clearance_m:1});
+  return run;
+}
+test("fixed one-metre drop is separate from a one-times relative drop", () => {
+  const fixed = fixedValidationRun();
+  const [group] = context.dropValidationGroups({runs:[fixed, validationRun("medium")]});
+  assert.equal(group.cases["fixed-1m"].complete, true);
+  assert.equal(group.cases.medium.complete, true);
+  assert.equal(group.cases.low, undefined);
+  assert.match(context.caseTitle(fixed, fixed.cases[0]), /固定 1 米摔落/);
+});
+test("condition and coverage panels show fixed metres and missing fixed coverage", () => {
+  const textOf = node => [node.textContent, ...node.children.map(textOf)].join(" ");
+  const fixed = fixedValidationRun();
+  const conditions = textOf(context.testConditions(fixed, fixed.cases[0]));
+  assert.match(conditions, /固定高度 · 1 米/);
+  assert.doesNotMatch(conditions, /倍场景缩放基准/);
+  const asset = {identity:"fixtures/box", runs:[validationRun("low")]};
+  assert.match(textOf(context.coveragePanel(asset)), /固定 1 米：尚未运行/);
+  asset.runs.unshift(fixed);
+  assert.match(textOf(context.coveragePanel(asset)), /固定 1 米：已完成录像，待人工检查/);
+});
+test("fixed drop needs verified one-metre clearance and cannot fill relative coverage", () => {
+  for (const actual of [undefined, null, 0.1, NaN]) {
+    const fixed = fixedValidationRun();
+    fixed.cases[0].condition.actual_initial_clearance_m = actual;
+    const [group] = context.dropValidationGroups({runs:[fixed]});
+    assert.equal(group.cases["fixed-1m"].complete, false);
+    assert.equal(group.cases.medium, undefined);
+  }
+  const wrongScale = fixedValidationRun();
+  wrongScale.cases[0].condition.clearance_scale = 1;
+  assert.equal(context.dropValidationGroups({runs:[wrongScale]}).length, 0);
+});
+test("fixed drop keeps latest failure and separates source versions", () => {
+  const failed = fixedValidationRun();
+  failed.cases[0].status = "failed";
+  const groups = context.dropValidationGroups({runs:[failed, fixedValidationRun(),
+    fixedValidationRun({git_commit:"c".repeat(40)})]});
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].cases["fixed-1m"].complete, false);
+  assert.equal(groups[1].cases["fixed-1m"].complete, true);
+});
 test("drop coverage groups matching versions and code, retaining missing levels", () => {
   const runs = [validationRun("low"), validationRun("medium"), validationRun("high", {asset_version:"c".repeat(64)})];
   const groups = context.dropValidationGroups({runs});

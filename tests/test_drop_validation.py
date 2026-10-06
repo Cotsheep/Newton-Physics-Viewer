@@ -26,7 +26,7 @@ class DropValidationSceneTests(unittest.TestCase):
         self.assertAlmostEqual(actual, geometry.clearance, places=6)
         self.assertEqual(scene.completed_physics_steps, 0)
 
-    def test_three_releases_preserve_asset_and_use_lower_priority_ground(self):
+    def test_four_releases_preserve_asset_and_use_lower_priority_ground(self):
         import mujoco
         from experiment_runner.experiments.drop import create_drop_scene, measure_drop_geometry
         from experiment_runner.experiments.drop_reference import attach_drop_reference
@@ -35,13 +35,16 @@ class DropValidationSceneTests(unittest.TestCase):
         profile = get_profile('mujoco-cpu-wsl-smoke-v1')
         initial_poses = []
         cameras = []
-        for height in ('low', 'medium', 'high'):
+        for height in ('low', 'medium', 'high', 'fixed-1m'):
             spec = drop_validation_case(height)
-            geometry = measure_drop_geometry(asset, profile=profile, clearance_scale=spec.clearance_scale)
+            geometry = measure_drop_geometry(asset, profile=profile, clearance_scale=spec.clearance_scale,
+                                             fixed_clearance_m=spec.fixed_clearance_m)
             scene = create_drop_scene(asset, profile=profile, clearance=geometry.clearance,
                                       measured_bounds=geometry.initial_bounds, neutral_reference=True)
             conditions = attach_drop_reference(scene, geometry)
-            self.assertAlmostEqual(conditions['actual_initial_clearance_m'], spec.clearance_scale * geometry.effective_length, places=6)
+            expected = spec.fixed_clearance_m if spec.fixed_clearance_m is not None else spec.clearance_scale * geometry.effective_length
+            self.assertAlmostEqual(conditions['actual_initial_clearance_m'], expected, places=6)
+            self.assertGreaterEqual(conditions['scale_reference']['ruler_top_m'], 1.0 + geometry.initial_bounds.extents[2])
             self.assertLess(conditions['reference_ground_priority'], conditions['asset_min_contact_priority'])
             self.assertEqual(scene.completed_physics_steps, 0)
             np.testing.assert_array_equal(scene.state.body_qd.numpy(), 0)
@@ -65,6 +68,39 @@ class DropValidationSceneTests(unittest.TestCase):
             np.testing.assert_allclose(bounds.minimum, cameras[0].minimum)
             np.testing.assert_allclose(bounds.maximum, cameras[0].maximum)
         self.assertEqual(asset.read_bytes(), before)
+
+    def test_fixed_clearance_is_independent_of_asset_size_and_clamping(self):
+        from asset_viewer.camera import AssetBounds
+        from experiment_runner.experiments.drop import measure_drop_geometry
+        from experiment_runner.experiments.drop_reference import scale_reference
+        profile = get_profile('mujoco-cpu-wsl-smoke-v1')
+        for size in (0.02, 0.3, 0.495, 2.0):
+            bounds = AssetBounds(np.zeros(3), np.full(3, size))
+            with self.subTest(size=size), mock.patch('experiment_runner.experiments.drop.build_model',
+                    return_value=(mock.Mock(), mock.Mock(), None)), mock.patch(
+                    'experiment_runner.experiments.drop.compute_asset_bounds', return_value=bounds):
+                geometry = measure_drop_geometry(Path('unused.usda'), profile=profile,
+                                                 clearance_scale=None, fixed_clearance_m=1.0)
+                self.assertEqual(geometry.clearance, 1.0)
+                self.assertEqual(geometry.characteristic_length, size)
+                self.assertEqual(geometry.effective_length, min(max(size, 0.1), 1.0))
+                placed = AssetBounds(bounds.minimum + [0, 0, 1], bounds.maximum + [0, 0, 1])
+                reference = scale_reference(placed, geometry.effective_length)
+                self.assertGreaterEqual(reference.camera_bounds.maximum[2], placed.maximum[2])
+                self.assertTrue(np.any(np.isclose(reference.starts[:, 2], 1.0)
+                                       & np.isclose(reference.ends[:, 2], 1.0)))
+
+    def test_invalid_or_ambiguous_clearance_is_rejected_before_runtime_setup(self):
+        from experiment_runner.experiments.drop import measure_drop_geometry
+        profile = get_profile('mujoco-cpu-wsl-smoke-v1')
+        invalid = [dict(clearance_scale=1.0, fixed_clearance_m=1.0), dict(clearance_scale=None),
+                   *[dict(clearance_scale=None, fixed_clearance_m=value)
+                     for value in (0, -1, float('nan'), float('inf'))]]
+        with mock.patch('experiment_runner.experiments.drop.configure_warp_for_profile') as configure:
+            for arguments in invalid:
+                with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                    measure_drop_geometry(Path('unused.usda'), profile=profile, **arguments)
+            configure.assert_not_called()
 
     def test_priority_underflow_is_rejected_without_assignment(self):
         import newton
@@ -92,6 +128,8 @@ class DropValidationBoundaryTests(unittest.TestCase):
                 parser.parse_args(['validate-drop-gpu','a','b',*extra])
         parsed = parser.parse_args(['validate-drop-gpu','a','b','--height','high'])
         self.assertEqual(parsed.height, 'high')
+        parsed = parser.parse_args(['validate-drop-gpu','a','b','--height','fixed-1m'])
+        self.assertEqual(parsed.height, 'fixed-1m')
         self.assertFalse(describe_profiles()['mujoco-native-dt1ms-v1']['availability']['runnable'])
 
     def test_fixed_development_profile_only(self):
@@ -115,8 +153,10 @@ class DropValidationRunnerTests(unittest.TestCase):
     def test_all_levels_reach_scene_with_correct_scale_and_retain_case_results(self):
         from tests.test_gpu_smoke import RunnerHarness
         from experiment_runner.storage import read_json
-        for height, scale in [('low', .5), ('medium', 1), ('high', 2)]:
+        for height, scale in [('low', .5), ('medium', 1), ('high', 2), ('fixed-1m', None)]:
             with self.subTest(height=height), RunnerHarness() as harness:
+                if height == 'fixed-1m':
+                    harness.geometry.clearance = 1.0
                 measure = harness.stack.enter_context(mock.patch(
                     'experiment_runner.experiments.drop.measure_drop_geometry', return_value=harness.geometry))
                 harness.stack.enter_context(mock.patch('experiment_runner.experiments.drop_reference.attach_drop_reference',
@@ -130,10 +170,19 @@ class DropValidationRunnerTests(unittest.TestCase):
                 harness.stack.enter_context(mock.patch('experiment_runner.experiments.gpu_recording.record_gpu_drop_case', side_effect=record))
                 result = harness.run(validation_height=height)
                 self.assertEqual(measure.call_args.kwargs['clearance_scale'], scale)
+                self.assertEqual(measure.call_args.kwargs.get('fixed_clearance_m'), 1.0 if height == 'fixed-1m' else None)
                 self.assertTrue(harness.create_scene.call_args.kwargs['neutral_reference'])
                 run = harness.root.location('runs') / result['run_id']
                 case = read_json(run / f'cases/001-{height}-validation/case.json')
                 self.assertEqual(case['condition']['height_level'], height)
+                if height == 'fixed-1m':
+                    self.assertEqual(harness.create_scene.call_args.kwargs['clearance'], 1.0)
+                    self.assertEqual(case['condition']['case_scope'], 'fixed_1m_drop_validation_v1')
+                    self.assertIsNone(case['condition']['clearance_scale'])
+                    self.assertEqual(case['condition']['fixed_clearance_m'], 1.0)
+                    self.assertEqual(case['condition']['clearance_m'], 1.0)
+                    batch = read_json(harness.root.location('batches') / result['batch_id'] / 'batch.json')
+                    self.assertEqual(batch['request_summary']['drop_fixed_clearance_m'], 1.0)
                 self.assertEqual(case['duration_seconds'], 10)
                 self.assertEqual(case['execution']['completed_physics_steps'], 10000)
                 self.assertEqual(case['status'], 'succeeded')
@@ -148,10 +197,10 @@ class DropValidationRunnerTests(unittest.TestCase):
             viewer, frame = GpuVideoSmokeTests().recording_mocks(harness)
             frame.return_value = np.full((720, 1280, 3), 80, dtype=np.uint8)
             harness.stack.enter_context(mock.patch('experiment_runner.experiments.drop_reference.attach_drop_reference', return_value={}))
-            result = harness.run(validation_height='high')
+            result = harness.run(validation_height='fixed-1m')
             run = harness.root.location('runs') / result['run_id']
-            case = read_json(run/'cases/001-high-validation/case.json')
-            frames, duration = imageio_ffmpeg.count_frames_and_secs(str(run/'cases/001-high-validation/video.mp4'))
+            case = read_json(run/'cases/001-fixed-1m-validation/case.json')
+            frames, duration = imageio_ffmpeg.count_frames_and_secs(str(run/'cases/001-fixed-1m-validation/video.mp4'))
             self.assertEqual((frames, duration), (525, 10.5))
             self.assertEqual(case['physics_steps'], 10000)
             self.assertEqual(harness.scene.solver.step.call_count, 10000)

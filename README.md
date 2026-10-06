@@ -33,6 +33,7 @@ SSH 配置管理，服务器使用自己的 Python 环境和 `server.toml`。
 | 本地结果 Web UI | 可用 | 按资产封面组织结果，在页面中直接播放工况录像 |
 | 单 GPU 摔落 integration smoke | 指定节点测试资产已验证 | Determined trial 内一个中等高度、1 秒、非正式工况；默认不录像，不开放参数扫描 |
 | 单 GPU 带录像冒烟 | 指定节点测试资产已验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/guides/GPU_VIDEO_SMOKE.md) |
+| 三档及固定 1 米摔落开发验证 | 已实现；固定 1 米待服务器验证 | `validate-drop-gpu --height low\|medium\|high\|fixed-1m`，每次单工况、10 秒；参见 [摔落验证说明](deployment/guides/DROP_THREE_HEIGHT_VALIDATION.md) |
 | SSH 远程结果浏览 | 手动服务和隧道已验证 | 菜单自动会话仍需其独立前置配置；不等同于本次手动查看 |
 | 服务器就绪检查 | 已实现，本地验证 | `check-readiness --json` 检查环境、存储、编码和回环端口；不导入仿真栈或探测 GPU |
 | 正式 GPU 批次 | 未开放 | 单工况集成验证不替代正式策略、多工况实现和验收 |

@@ -173,8 +173,10 @@ function testConditions(run, testCase) {
   const rows = [["资产版本", run.asset_version ? run.asset_version.slice(0, 12) : "未记录"]];
   if (run.template === "drop") {
     const levels = {low: "低档", medium: "中档", high: "高档"};
-    if (condition.case_scope === "three_height_drop_validation_v1") {
-      rows.push(["释放档位", `${levels[condition.height_level] || "未记录"} · ${formatMetric(condition.clearance_scale, "倍场景缩放基准")}`]);
+    if (["three_height_drop_validation_v1", "fixed_1m_drop_validation_v1"].includes(condition.case_scope)) {
+      rows.push(["释放工况", condition.case_scope === "fixed_1m_drop_validation_v1"
+        ? `固定高度 · ${lengthLabel(condition.fixed_clearance_m)}`
+        : `${levels[condition.height_level] || "未记录"} · ${formatMetric(condition.clearance_scale, "倍场景缩放基准")}`]);
       rows.push(["参考面", condition.reference_policy === "asset_priority_over_ground_v1"
         ? "中性水平面，资产接触参数优先" : "未记录"]);
       if (condition.scale_reference?.kind === "visual_only_meter_ruler_and_square_v1") {
@@ -256,7 +258,7 @@ function parameterPanel(run, testCase = null) {
 function coveragePanel(asset) {
   const section = element("section", "coverage-panel");
   section.append(element("h2", "", "检查覆盖范围"));
-  section.append(element("p", "", "最终需要：低、中、高三档摔落；缓、中、陡坡与水平滑行；同条件下与其他资产及标准参照物比较。"));
+  section.append(element("p", "", "最终需要：低、中、高三档及固定 1 米摔落；缓、中、陡坡与水平滑行；同条件下与其他资产及标准参照物比较。"));
   const functionOnly = asset.runs.every((run) => isFunctionTest(run));
   section.append(element("p", "", functionOnly
     ? "当前只有功能测试记录，正式多工况尚未开放；不能据此视为完整物理检查。"
@@ -270,9 +272,9 @@ function coveragePanel(asset) {
   list.append(element("li", "", "水平滑行与标准参照物比较：尚无可核查的覆盖记录"));
   section.append(list);
   dropValidationGroups(asset).forEach((group) => {
-    section.append(element("h3", "", `三档摔落开发验证 · 版本 ${group.version.slice(0, 12)}`));
+    section.append(element("h3", "", `摔落开发验证 · 版本 ${group.version.slice(0, 12)}`));
     const items = element("ul", "coverage-list");
-    for (const [level, label] of [["low", "低档"], ["medium", "中档"], ["high", "高档"]]) {
+    for (const [level, label] of [["low", "低档"], ["medium", "中档"], ["high", "高档"], ["fixed-1m", "固定 1 米"]]) {
       const record = group.cases[level];
       const item = element("li", "", `${label}：${record ? (record.complete ? "已完成录像，待人工检查" : STATUS_LABELS[record.testCase.status] === "已完成" ? "记录不完整" : STATUS_LABELS[record.testCase.status] || "状态未知") : "尚未运行"}`);
       if (record?.testCase.video_url) {
@@ -282,7 +284,7 @@ function coveragePanel(asset) {
       }
       items.append(item);
     }
-    section.append(items, element("p", "measurement-note", `同一资产版本、源码 ${group.commit.slice(0, 12)} 与运行配置分组；每档观察 10 秒。开发覆盖不等于正式验收。`));
+    section.append(items, element("p", "measurement-note", `同一资产版本、源码 ${group.commit.slice(0, 12)} 与运行配置分组；每个工况观察 10 秒。开发覆盖不等于正式验收。`));
   });
   return section;
 }
@@ -296,8 +298,11 @@ function dropValidationGroups(asset) {
     for (const testCase of run.cases) {
       const condition = testCase.condition || {};
       const level = condition.height_level;
-      if (condition.case_scope !== "three_height_drop_validation_v1"
-          || !Object.hasOwn(scales, level) || condition.clearance_scale !== scales[level]) continue;
+      const relative = condition.case_scope === "three_height_drop_validation_v1"
+        && Object.hasOwn(scales, level) && condition.clearance_scale === scales[level];
+      const fixed = condition.case_scope === "fixed_1m_drop_validation_v1"
+        && level === "fixed-1m" && condition.fixed_clearance_m === 1 && condition.clearance_scale === null;
+      if (!relative && !fixed) continue;
       const key = JSON.stringify([run.asset_version, run.git_commit, run.profile_name, condition.reference_policy]);
       if (!groups.has(key)) groups.set(key, {version: run.asset_version, commit: run.git_commit, cases: {}});
       const group = groups.get(key);
@@ -305,7 +310,9 @@ function dropValidationGroups(asset) {
       group.cases[level] = {run, testCase, complete: testCase.status === "succeeded"
         && testCase.finite === true && testCase.physics_steps === 10000
         && testCase.duration_seconds === 10 && testCase.video_duration_seconds === 10.5
-        && !!testCase.video_url && condition.reference_policy === "asset_priority_over_ground_v1"};
+        && !!testCase.video_url && condition.reference_policy === "asset_priority_over_ground_v1"
+        && (!fixed || (condition.clearance_m === 1 && Number.isFinite(condition.actual_initial_clearance_m)
+          && Math.abs(condition.actual_initial_clearance_m - 1) <= 1e-6))};
     }
   }
   return [...groups.values()];
@@ -331,6 +338,9 @@ function isFunctionTest(run, testCase = {}) {
 }
 
 function caseTitle(run, testCase) {
+  if (testCase.condition?.case_scope === "fixed_1m_drop_validation_v1") {
+    return "固定 1 米摔落 · 开发验证";
+  }
   if (testCase.condition?.case_scope === "three_height_drop_validation_v1") {
     const level = {low: "低档", medium: "中档", high: "高档"}[testCase.condition.height_level];
     return `${level || "未标注档位"}摔落 · 开发验证`;
