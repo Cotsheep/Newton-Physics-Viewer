@@ -61,13 +61,13 @@ def validate_template(document):
 
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
-        self.document = yaml.safe_load((ROOT / "deployment/determined-gpu-smoke-8min.yaml").read_text(encoding="utf-8"))
+        self.document = yaml.safe_load((ROOT / "deployment/templates/determined-gpu-smoke-8min.yaml").read_text(encoding="utf-8"))
 
     def test_yaml_structure_and_types(self):
         validate_template(self.document)
 
     def test_video_template_retains_limits_and_requests_graphics_only_as_needed(self):
-        document = yaml.safe_load((ROOT / "deployment/determined-gpu-video-smoke-8min.yaml").read_text(encoding="utf-8"))
+        document = yaml.safe_load((ROOT / "deployment/templates/determined-gpu-video-smoke-8min.yaml").read_text(encoding="utf-8"))
         validate_template(document)
         self.assertIn("--record-video", document["entrypoint"])
         self.assertIn("timeout --signal=INT --kill-after=30s 8m", document["entrypoint"])
@@ -103,6 +103,11 @@ class DeploymentTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_relocated_tool_is_part_of_source_fingerprint(self):
+        files = source_files(ROOT)
+        self.assertIn("tools/record_collision_comparisons.py", files)
+        self.assertNotIn("record_collision_comparisons.py", files)
+
     def make_source(self, root):
         (root / "experiment_runner").mkdir(parents=True)
         (root / "asset_viewer").mkdir()

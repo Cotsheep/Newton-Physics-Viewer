@@ -4,7 +4,7 @@
 
 ## 先理解当前进度
 
-先读 [当前状态与下一步](CURRENT_STATUS.md)、[部署说明](README.md)、[GPU 录像说明](GPU_VIDEO_SMOKE.md)，再按任务需要读 README、CONTEXT、ADR 和实现。历史验收报告反映各自日期，不覆盖后续真实 trial 证据。
+先读 [当前状态与下一步](../CURRENT_STATUS.md)、[部署说明](../README.md)、[GPU 录像说明](GPU_VIDEO_SMOKE.md)，再按任务需要读 README、CONTEXT、ADR 和实现。历史验收报告反映各自日期，不覆盖后续真实 trial 证据。
 
 测试小方块的共享存储、预制 Python 环境、单 GPU 物理解算、NVIDIA EGL 渲染、视频文件校验及手动 SSH 浏览已验证。下一步是接入一个真实资产，源目录和格式仍待用户提供。不要从首次部署或首次 GPU 冒烟重新开始。
 

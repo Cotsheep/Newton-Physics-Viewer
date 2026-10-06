@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import BinaryIO, Iterable, Sequence
 from xml.etree import ElementTree as ET
 
+# Direct execution from another working directory still imports this checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import imageio_ffmpeg
 import newton
 import newton.viewer

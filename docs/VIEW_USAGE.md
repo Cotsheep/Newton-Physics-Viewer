@@ -2,9 +2,9 @@
 
 `view.py` 用 Newton Viewer 打开 URDF、USD 或 GLB 资产，并提供关节滑条、资产快速切换、自动相机取景、精细视角控制、位置显示、双面渲染和右键拖拽力显示。项目用于查看和检测资产是否适合作为机器人仿真模型，不会自动猜测缺失的质量、关节或碰撞属性。
 
-项目安装、统一中文菜单和当前能力边界参见 [`README.md`](README.md)。远程服务器运行和
+项目安装、统一中文菜单和当前能力边界参见 [`README.md`](../README.md)。远程服务器运行和
 Web UI 的架构、第一阶段范围及后续演进建议参见
-[`docs/远程物理试验运行与结果查看路线.md`](docs/远程物理试验运行与结果查看路线.md)。
+[`docs/远程物理试验运行与结果查看路线.md`](远程物理试验运行与结果查看路线.md)。
 桌面 Viewer 与自动试验是两条不同管线：Viewer 可按所选求解器使用本机 GPU，并使用
 Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则固定为非正式 MuJoCo CPU、
 原生 MuJoCo contacts，物理解算不使用 CUDA。Windows 冒烟录像使用系统 OpenGL，
@@ -12,7 +12,7 @@ Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则�
 非正式 CPU 物理边界。二者结果不能直接比较，坡度冒烟也不产生正式摩擦结论。
 服务器侧另有一个不出现在 Viewer 或普通菜单中的 `smoke-drop-gpu` development/integration
 入口。它只在 Determined 分配的单 GPU trial 中使用 Newton `SolverMuJoCo` 的 MJWarp/CUDA
-路径推进一个固定短工况，不提供交互，也不与 Viewer 结果比较；已在指定节点验证测试资产的仿真及可选 GPU 录像。真实资产和正式批次仍待完成，参见 [当前状态](deployment/CURRENT_STATUS.md)。
+路径推进一个固定短工况，不提供交互，也不与 Viewer 结果比较；已在指定节点验证测试资产的仿真及可选 GPU 录像。真实资产和正式批次仍待完成，参见 [当前状态](../deployment/CURRENT_STATUS.md)。
 
 ## 代码目录
 
@@ -24,7 +24,7 @@ Newton contacts 支持交互；菜单中的摔落和固定 25° 坡度冒烟则�
 - `asset_viewer/solvers.py`：求解器选择与构建
 - `asset_viewer/traction.py`：右键拖拽牵引力的计算和显示
 - `asset_viewer/app.py`：Newton 模型构建、Viewer 运行时和命令行
-- `record_collision_comparisons.py`：修复前后碰撞体的筛选、仿真和对比录像
+- `tools/record_collision_comparisons.py`：修复前后碰撞体的筛选、仿真和对比录像
 
 默认读取目录：
 
@@ -295,21 +295,21 @@ USD 使用独立的 `--usd-root-mode authored|floating|fixed`，不会受到 URD
 
 ## 碰撞体修复前后对比
 
-`record_collision_comparisons.py` 属于资产质量检测工具。它读取原资产及同级的
+`tools/record_collision_comparisons.py` 属于资产质量检测工具。它读取原资产及同级的
 `<模型> - fix`，可以先按碰撞数量或短时落体仿真筛选，再为指定资产生成修复前后的
 确定性对比录像。它不修改资产。
 
 筛选候选资产：
 
 ```powershell
-python record_collision_comparisons.py --screen
-python record_collision_comparisons.py --screen --counts-only --screen-limit 20
+python tools/record_collision_comparisons.py --screen
+python tools/record_collision_comparisons.py --screen --counts-only --screen-limit 20
 ```
 
 为一个或多个资产录像：
 
 ```powershell
-python record_collision_comparisons.py `
+python tools/record_collision_comparisons.py `
   --asset-dir D:\path\to\category\source\MODEL_ID `
   --output-root D:\path\to\comparison_output
 ```

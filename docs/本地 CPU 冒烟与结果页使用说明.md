@@ -170,7 +170,7 @@ GPU 冒烟不调用 CPU safety 路径，不隐藏 CUDA，也不修改全局设�
 入口仍在导入仿真栈前设置 `CUDA_VISIBLE_DEVICES=-1`，Linux 继续要求 Mesa 软件 OpenGL。
 
 默认 GPU 冒烟仍不录像；它保留原结构化协议及历史兼容字段，不创建不存在的媒体文件。
-`--record-video` 选择独立配置，要求 GPU 渲染和实际取帧成功，失败时保留诊断；不能因默认入口的历史字段推断录像尚未实现。具体环境适配见 [GPU 录像说明](../deployment/GPU_VIDEO_SMOKE.md)。
+`--record-video` 选择独立配置，要求 GPU 渲染和实际取帧成功，失败时保留诊断；不能因默认入口的历史字段推断录像尚未实现。具体环境适配见 [GPU 录像说明](../deployment/guides/GPU_VIDEO_SMOKE.md)。
 
 ## 6. 当前尚未开放
 

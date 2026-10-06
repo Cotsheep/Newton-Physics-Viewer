@@ -803,6 +803,37 @@ class ResultBrowserTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_server_results_uses_personal_configuration(self) -> None:
+        from experiment_runner.controller import main
+        config = ControllerConfig(ssh_alias="personal-server", local_port=8770, remote_port=8877)
+        with mock.patch("experiment_runner.controller.load_controller_config", return_value=config), \
+                mock.patch("experiment_runner.controller.open_remote_results", return_value=130) as browse:
+            self.assertEqual(main(["server-results", "--no-browser"]), 130)
+        browse.assert_called_once_with(host_alias="personal-server", local_port=8770,
+                                       remote_port=8877, open_browser=False)
+
+    def test_server_results_requires_configured_alias_before_connecting(self) -> None:
+        from experiment_runner.controller import main
+        with mock.patch("experiment_runner.controller.load_controller_config", return_value=ControllerConfig()), \
+                mock.patch("experiment_runner.controller.open_remote_results") as browse:
+            with self.assertRaises(SystemExit) as raised:
+                main(["server-results"])
+        self.assertEqual(raised.exception.code, 2)
+        browse.assert_not_called()
+
+    def test_remote_results_busy_local_port_does_not_connect_or_stop_existing_process(self) -> None:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            with mock.patch("experiment_runner.controller.check_remote_results_ready") as readiness, \
+                    mock.patch("experiment_runner.controller.subprocess.Popen") as start:
+                with self.assertRaisesRegex(RuntimeError, "已被占用"):
+                    open_remote_results(host_alias="personal-server", local_port=port)
+                readiness.assert_not_called()
+                start.assert_not_called()
+
     def test_first_run_setup_can_be_skipped_and_menu_remains_available(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "controller.toml"
@@ -926,7 +957,7 @@ class DocumentationBoundaryTests(unittest.TestCase):
         project_root = Path(__file__).resolve().parent.parent
         for relative in (
             "README.md",
-            "VIEW_USAGE.md",
+            "docs/VIEW_USAGE.md",
             "docs/本地 CPU 冒烟与结果页使用说明.md",
         ):
             with self.subTest(relative=relative):

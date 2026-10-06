@@ -207,6 +207,14 @@ def open_remote_results(
     remote_port: int = 8765,
     open_browser: bool = True,
 ) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", _validated_port(local_port)))
+        except OSError as exc:
+            raise RuntimeError(
+                f"本地结果端口 {local_port} 已被占用；请使用已有查看窗口，"
+                "或在个人配置中选择其他端口。不会终止已有进程。"
+            ) from exc
     check_remote_results_ready(host_alias, remote_port=remote_port)
     ssh_executable = shutil.which("ssh.exe") or shutil.which("ssh")
     if ssh_executable is None:
@@ -793,6 +801,13 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--port", type=int, default=8765)
     local.add_argument("--no-browser", action="store_true")
 
+    configured = subparsers.add_parser(
+        "server-results",
+        help="Read personal SSH/port settings and open server results (Windows: open-server-results.cmd).",
+        description="读取 ~/.config/newton-test/controller.toml 的 SSH 别名和端口，查看服务器已有结果。",
+    )
+    configured.add_argument("--no-browser", action="store_true")
+
     remote = subparsers.add_parser(
         "remote-results",
         help="Open an SSH-tunneled remote read-only result page.",
@@ -831,6 +846,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.data_root,
                 port=args.port,
                 open_browser=not args.no_browser,
+            )
+        if args.command == "server-results":
+            config = load_controller_config()
+            if config.ssh_alias is None:
+                raise ValueError(
+                    "尚未设置 SSH 别名；请双击 newton-test.cmd，进入“9. 设置”，"
+                    "或编辑 ~/.config/newton-test/controller.toml 的 remote.ssh_alias"
+                )
+            return open_remote_results(
+                host_alias=config.ssh_alias,
+                local_port=config.local_port,
+                remote_port=config.remote_port,
+                open_browser=config.open_browser and not args.no_browser,
             )
         if args.command == "remote-results":
             return open_remote_results(

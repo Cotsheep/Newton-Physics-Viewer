@@ -24,6 +24,7 @@ def source_files(root: Path) -> dict[str, str]:
     """Fingerprint executable source, static UI and dependency declarations."""
     paths = [root / "pyproject.toml", root / "uv.lock"]
     paths.extend(root.glob("*.py"))
+    paths.extend((root / "tools").rglob("*.py"))
     for name in ("experiment_runner", "asset_viewer"):
         if not (root / name).is_dir():
             raise ValueError(f"Missing source package: {name}")

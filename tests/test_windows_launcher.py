@@ -56,6 +56,33 @@ class WindowsLauncherTests(unittest.TestCase):
             completed.stdout + completed.stderr,
         )
 
+    def test_result_launcher_uses_crlf(self) -> None:
+        content = (PROJECT_ROOT / "open-server-results.cmd").read_bytes()
+        self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows cmd.exe")
+    def test_result_launcher_locates_project_from_another_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Newton launcher ") as temporary:
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/c", str(PROJECT_ROOT / "open-server-results.cmd"), "--help"],
+                cwd=temporary, capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("server-results", completed.stdout)
+        self.assertIn("controller.toml", completed.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows cmd.exe")
+    def test_result_launcher_missing_environment_preserves_failure_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Newton missing env ") as temporary:
+            launcher = Path(temporary) / "open-server-results.cmd"
+            launcher.write_bytes((PROJECT_ROOT / launcher.name).read_bytes())
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/c", str(launcher)], cwd=PROJECT_ROOT,
+                input="\n", capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+            )
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("找不到", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

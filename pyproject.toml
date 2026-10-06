@@ -44,6 +44,9 @@ include = [
     "/view.py",
     "/run_physics_experiment.py",
     "/experimentctl.py",
+    "/newton-test.cmd",
+    "/open-server-results.cmd",
     "/README.md",
-    "/VIEW_USAGE.md",
+    "/docs/VIEW_USAGE.md",
+    "/tools",
 ]

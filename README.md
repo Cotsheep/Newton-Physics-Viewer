@@ -2,7 +2,24 @@
 
 Newton-Test 用于查看 URDF、USD、GLB 资产，并逐步建立基于 Newton–MuJoCo 的 3D 资产物理合理性检查流程。项目默认物理求解器为 MuJoCo。
 
-当前版本已打通桌面资产查看、本地 CPU 冒烟、资产验收入库，并在指定 Determined 节点完成小测试资产的 GPU 摔落、NVIDIA EGL 渲染录像、共享存储校验和手动 SSH 结果页播放。真实资产验证是下一步，正式 GPU 批次仍未开放。最新范围与续接点见 [当前状态](deployment/CURRENT_STATUS.md)。
+当前版本已打通桌面资产查看、本地 CPU 冒烟、资产验收入库及服务器结果浏览；已有一个公共球体的低档 GPU 开发验证和录像，完整物理验收仍未完成。最新范围与续接点见 [当前状态](deployment/CURRENT_STATUS.md)。
+
+## 常用入口
+
+**查看服务器已有结果：双击根目录的 `open-server-results.cmd`。** 保持窗口运行，
+浏览器中选择资产与录像；按 `Ctrl+C` 结束本次访问。从其他工作目录启动也能定位本项目。
+入口使用本地 `.venv`，读取 `~/.config/newton-test/controller.toml` 中的
+`remote.ssh_alias`、`local_port`、`remote_port` 和浏览器偏好。SSH 地址由个人
+SSH 配置管理，服务器使用自己的 Python 环境和 `server.toml`。
+
+若端口已占用，先使用已有查看窗口；入口会报错，不终止已有进程。连接失败时保留错误提示
+和退出码。已有部署无需重新安装环境或运行试验。命令行可用
+`open-server-results.cmd --no-browser` 只建立会话，再手动打开提示的地址。
+
+其他常用操作：双击 `newton-test.cmd` 打开中文菜单；桌面查看器仍可用 `uv run python view.py`。
+辅助工具在 `tools/`，使用说明在 `docs/`，部署模板在 `deployment/templates/`。
+个人资料从 `deployment/local/README.md` 进入，当前笔记在 `deployment/local/notes/`。
+完整目录树、迁移对照和保留边界见[项目目录与迁移说明](docs/项目目录与迁移说明.md)。
 
 ## 当前能力
 
@@ -10,12 +27,12 @@ Newton-Test 用于查看 URDF、USD、GLB 资产，并逐步建立基于 Newton�
 | --- | --- | --- |
 | URDF、USD、GLB 桌面 Viewer | 可用 | 支持关节控制、碰撞显示、拖拽、相机控制和多种求解器 |
 | 资产验收入库 | 可用 | 解析 USD 依赖、计算内容版本并分别检查摔落与坡度就绪状态 |
-| 外部只读 USD 资产 | 单包原位登记已在服务器核对，GPU 尚未验收 | 依赖版本复核、同一运行入口；可显式采用引用子层的场景声明。不复制、移动或写入源目录。见[使用说明](docs/外部只读资产.md) |
+| 外部只读 USD 资产 | 单包登记及低档 GPU 开发验证已有证据 | 依赖版本复核、同一运行入口；可显式采用引用子层的场景声明。不复制、移动或写入源目录。完整物理验收仍未完成，见[使用说明](docs/外部只读资产.md) |
 | 本地 CPU 摔落冒烟 | 可用 | 只运行一个中等高度工况，用于验证代码和结果链路 |
 | 本地 CPU 坡度冒烟 | 可用 | 只运行固定 25°、2 秒的单案例开发工况，不产生正式摩擦结论 |
 | 本地结果 Web UI | 可用 | 按资产封面组织结果，在页面中直接播放工况录像 |
 | 单 GPU 摔落 integration smoke | 指定节点测试资产已验证 | Determined trial 内一个中等高度、1 秒、非正式工况；默认不录像，不开放参数扫描 |
-| 单 GPU 带录像冒烟 | 指定节点测试资产已验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/GPU_VIDEO_SMOKE.md) |
+| 单 GPU 带录像冒烟 | 指定节点测试资产已验证 | `smoke-drop-gpu --record-video`，固定单工况，要求 EGL 取帧和 H.264 编码；参见 [录像部署说明](deployment/guides/GPU_VIDEO_SMOKE.md) |
 | SSH 远程结果浏览 | 手动服务和隧道已验证 | 菜单自动会话仍需其独立前置配置；不等同于本次手动查看 |
 | 服务器就绪检查 | 已实现，本地验证 | `check-readiness --json` 检查环境、存储、编码和回环端口；不导入仿真栈或探测 GPU |
 | 正式 GPU 批次 | 未开放 | 单工况集成验证不替代正式策略、多工况实现和验收 |
@@ -89,7 +106,7 @@ Windows 也可以直接双击仓库根目录的 `newton-test.cmd`。该文件只
 
 选择菜单第 1 项后，可以使用已保存的 Viewer 资产源目录，也可以临时输入某个 URDF、USD 或 GLB 路径。Viewer 是本地交互式程序，根据所选求解器可能使用本机 GPU。
 
-完整操作和参数参见 [VIEW_USAGE.md](VIEW_USAGE.md)。
+完整操作和参数参见 [VIEW_USAGE.md](docs/VIEW_USAGE.md)。
 
 ### 验收资产
 
@@ -131,7 +148,7 @@ OpenGL，并在推进物理时间前验证渲染器为软件实现；验证失�
 
 ### GPU integration smoke（服务器侧开发入口）
 
-可选的 `--record-video` 使用独立配置增加无头录像，详见 [GPU 带录像冒烟](deployment/GPU_VIDEO_SMOKE.md)。下文仅保存结构化产物的描述适用于默认、不带此选项的入口。
+可选的 `--record-video` 使用独立配置增加无头录像，详见 [GPU 带录像冒烟](deployment/guides/GPU_VIDEO_SMOKE.md)。下文仅保存结构化产物的描述适用于默认、不带此选项的入口。
 
 服务器侧新增了独立命令 `newton-test-remote smoke-drop-gpu`，但它不会出现在普通本地菜单或 Viewer 中，也不负责提交 Determined experiment。它只应由操作者在 `slots_per_trial: 1` 的 Determined trial 内前台调用。命令会在任何 Warp/CUDA 初始化前 fail-closed 检查 trial、allocation、单 slot 元数据和唯一的 `NVIDIA_VISIBLE_DEVICES=GPU-...` UUID；这只是防误用安全门，不是不可伪造的认证，真正隔离由 Determined/NVIDIA runtime 提供。随后 Warp 仍必须恰好发现一块设备，并且只选择容器逻辑 `cuda:0`。命令不接收宿主机 GPU 编号，发现元数据缺失、零块、多块、初始化失败、模型设备错误或 CPU solver 时立即失败，绝不回退 CPU。
 
@@ -154,7 +171,7 @@ GPU 入口还要求锁定依赖，以及干净且匹配的 Git checkout 或经 S
 3. `newton-test-remote` 在非交互 SSH 会话的 `PATH` 中可见；
 4. 服务器个人配置已指定试验数据根目录。
 
-选择菜单第 6 项后，本地程序先执行只读就绪检查，再建立：
+双击根目录 `open-server-results.cmd`，或选择菜单第 6 项后，本地程序先执行只读就绪检查，再建立：
 
 ```text
 本地浏览器
@@ -188,7 +205,7 @@ newton-test-remote smoke-drop-gpu <asset-identity> <full-asset-version> --data-r
 
 - [当前状态与下一步](deployment/CURRENT_STATUS.md)
 
-- [view.py 桌面 Viewer 使用手册](VIEW_USAGE.md)
+- [view.py 桌面 Viewer 使用手册](docs/VIEW_USAGE.md)
 - [本地 CPU 冒烟与结果页使用说明](<docs/本地 CPU 冒烟与结果页使用说明.md>)
 - [远程物理试验运行与结果查看路线](docs/远程物理试验运行与结果查看路线.md)
 - [Newton–MuJoCo 3D 资产物理合理性仿真检查方案](<docs/Newton–MuJoCo 3D 资产物理合理性仿真检查方案.md>)

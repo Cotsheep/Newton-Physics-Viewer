@@ -303,7 +303,7 @@ class GpuProfileAndCliTests(unittest.TestCase):
     def test_determined_example_is_placeholdered_bounded_and_no_sync(self) -> None:
         repository = Path(__file__).resolve().parent.parent
         example = (
-            repository / "deployment" / "determined-gpu-smoke-8min.yaml"
+            repository / "deployment" / "templates" / "determined-gpu-smoke-8min.yaml"
         ).read_text(encoding="utf-8")
         deployment_guide = (repository / "deployment" / "README.md").read_text(
             encoding="utf-8"

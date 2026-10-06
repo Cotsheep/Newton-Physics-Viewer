@@ -1,12 +1,21 @@
 # Determined 单 GPU 集成冒烟交付说明
 
+日常查看已部署服务器的结果，双击仓库根目录 `open-server-results.cmd`。它使用个人
+controller 配置中的 SSH 别名和端口，无需 GPU 或重新部署。配置缺失时从
+`newton-test.cmd` 的“9. 设置”填写；结果服务读取服务器已有个人 `server.toml`。
+
+部署目录已按用途整理：`guides/` 保存步骤，`templates/` 保存通用任务模板，
+`history/` 保存带原日期的验收记录，`local/README.md` 索引忽略的个人资料。
+代码整理通过 Git 更新个人 `repo/`，不修改旧源码导出、环境或运行数据。
+完整目录与迁移对照见[项目目录与迁移说明](../docs/项目目录与迁移说明.md)。
+
 2026-10-04 接入方式补充：[外部只读资产登记](../docs/外部只读资产.md)已部署到个人开发仓库，并完成一个公共 USD 包的登记及预检阻断核对，尚无新的 GPU trial。采用它时必须为完整公共源目录增加单独只读挂载，且容器内源路径与登记记录一致；入口单位和朝向必须明确，现有 GPU 和干净源码交付限制全部保持，下方入库说明仍适用于自有副本方式。
 
-支持默认无录像及独立的 [GPU 带录像入口](GPU_VIDEO_SMOKE.md)：`smoke-drop-gpu --record-video`。两条路径均有指定节点上的实际运行证据，最新范围见 [当前状态](CURRENT_STATUS.md)。默认不录像的行为保留。
+支持默认无录像及独立的 [GPU 带录像入口](guides/GPU_VIDEO_SMOKE.md)：`smoke-drop-gpu --record-video`。两条路径均有指定节点上的实际运行证据，最新范围见 [当前状态](CURRENT_STATUS.md)。默认不录像的行为保留。
 
 当前交付范围是单 trial、单 GPU、单个中等高度摔落、1000 步的非正式集成入口，可显式要求 GPU 录像。测试资产已完成目标节点的执行、文件校验和播放确认；真实资产和正式批次仍待验证。正式 profile `mujoco-native-dt1ms-v1` 继续为 `reserved_not_runnable`，本地 fake/mock 测试仍不能替代目标运行。
 
-仓库不连接、提交、激活或终止 Determined experiment，不安装系统服务，不修改 SSH、Tailscale 或全局环境。操作员使用 [8 分钟配置模板](determined-gpu-smoke-8min.yaml) 人工提交。
+仓库不连接、提交、激活或终止 Determined experiment，不安装系统服务，不修改 SSH、Tailscale 或全局环境。操作员使用 [8 分钟配置模板](templates/determined-gpu-smoke-8min.yaml) 人工提交。
 
 ## 1. 分配 GPU 前准备环境
 
@@ -92,7 +101,7 @@ det experiment create --paused <reviewed-config.yaml> <new-source-export-directo
 3. manifest 与 case 中的 allocation、逻辑设备、allocated/runtime UUID 和验证状态一致；正常设备应为 matched。unavailable 虽允许诊断运行，但必须明确记录为仍缺设备身份验证证据。
 4. `completed_physics_steps=1000`、`attempted_physics_step=1000`、`solver_step_completed=true`、`gpu_physics_completed=true`、`actual_compute_device=cuda:0`、`cuda_used=true`、`cpu_fallback=false`，case `finite=true`。
 5. `run.log`、`checksums.sha256` 存在且校验通过。默认入口仅保存结构化产物，`recording.status=not_attempted`。带录像入口则必须 `recording.status=succeeded`，校验 MP4、poster、final、preview，并检查 NVIDIA vendor 和 EGL/CUDA 设备匹配。
-6. 录像使用 ffprobe 读取实际帧数、尺寸、编码和时长，并人工查看内容；case 中的帧数或文件存在本身不能替代这两步。固定视频规格见 [录像说明](GPU_VIDEO_SMOKE.md)。
+6. 录像使用 ffprobe 读取实际帧数、尺寸、编码和时长，并人工查看内容；case 中的帧数或文件存在本身不能替代这两步。固定视频规格见 [录像说明](guides/GPU_VIDEO_SMOKE.md)。
 
 结果只证明受测资产在特定环境中的集成链路，不证明资产物理真实性或正式试验有效性。更换资产、驱动、节点或图形环境时须核对相应前置条件。
 
@@ -112,7 +121,7 @@ Windows 菜单先检查远端命令，再调用结构化 readiness。报告缺�
 
 ## 6. 当前验证状态
 
-以 [当前状态与下一步](CURRENT_STATUS.md) 为准。历史本地记录见 [2026-09-13 验收记录](ACCEPTANCE_RUN_2026-09-13.md)，其中当日未提交和未运行 GPU 的描述保留为历史，不代表今天仍受相同阻塞。
+以 [当前状态与下一步](CURRENT_STATUS.md) 为准。历史本地记录见 [2026-09-13 验收记录](history/ACCEPTANCE_RUN_2026-09-13.md)，其中当日未提交和未运行 GPU 的描述保留为历史，不代表今天仍受相同阻塞。
 
 本地 GPU 单元测试使用 fake/mock；实际 GPU 证据来自用户手动执行的 Determined trial、结果校验和播放确认。下一步是选定并复制一个真实资产，不重复已完成的小方块链路。
 
